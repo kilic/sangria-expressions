@@ -1,0 +1,1 @@
+experiment with halo2-like arbitrary polynomial expressions to evaluate _cross_ and _error_ polynomials of [Sangria folding scheme](https://github.com/geometryresearch/technical_notes/blob/main/sangria_folding_plonk.pdf)
