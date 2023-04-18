@@ -38,13 +38,16 @@ impl MultiGraphEvaluator {
 
         let mut evaluator = MultiGraphEvaluator::new(number_of_levels);
 
+        let mut parts = vec![vec![]; number_of_levels];
         for crossed_expression in folding_expression.iter() {
             let expressions = crossed_expression.into_expressions();
-
             for (level, expr) in expressions.iter().enumerate() {
-                // println!("level: {}, expr: {:?}", level, expr.identifier());
-                evaluator.add_expression(expr, level);
+                parts[level].push(expr.clone());
             }
+        }
+        for (level, parts) in parts.iter().enumerate() {
+            let level_sum = Expression::sum(parts);
+            evaluator.add_expression(&level_sum, level);
         }
 
         evaluator
@@ -133,7 +136,7 @@ impl MultiGraphEvaluator {
         match expr {
             // variables
             Expression::Variable(folding) => match folding {
-                Folding::Running(variable) => match variable {
+                Folding::Current(variable) => match variable {
                     Variable::U() => {
                         self.add_calculation(Calculation::Store(ValueSource::U()), level)
                     }
@@ -152,7 +155,7 @@ impl MultiGraphEvaluator {
                         )
                     }
                 },
-                Folding::Current(variable) => match variable {
+                Folding::Running(variable) => match variable {
                     Variable::U() => {
                         self.add_calculation(Calculation::Store(ValueSource::RunningU()), level)
                     }

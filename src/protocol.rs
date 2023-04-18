@@ -30,6 +30,7 @@ fn fixed(name: &str, index: usize, rotation: i32) -> Expression {
     })
 }
 
+#[derive(Debug, Clone)]
 struct Instance {
     advice: Vec<Polynomial>,
     challenges: Vec<F>,
@@ -39,36 +40,40 @@ struct Instance {
 }
 
 impl Instance {
-    fn fold(&mut self, other: Self, inter_polys: &[Polynomial], r: F) -> Self {
+    fn fold(&mut self, current: Self, inter_polys: &[Polynomial], r: F) {
+        let running = self;
         let mut r_inter = r;
-        self.error = inter_polys.iter().fold(self.error.clone(), |acc, t_i| {
-            let t = t_i * r_inter;
-            let acc = acc + t;
-            r_inter *= r;
-            acc
-        });
-        Self {
-            advice: self
-                .advice
-                .iter()
-                .zip(other.advice.iter())
-                .map(|(this, other)| this.fold(other, r))
-                .collect(),
-            challenges: self
-                .challenges
-                .iter()
-                .zip(other.challenges.iter())
-                .map(|(this, other)| this + other * r)
-                .collect(),
-            y: self
-                .y
-                .iter()
-                .zip(other.y.iter())
-                .map(|(this, other)| this + other * r)
-                .collect(),
-            error: self.error.clone(),
-            u: self.u + other.u * r,
-        }
+        assert!(current.error.is_zero());
+        assert!(current.u == 1);
+
+        running.error = inter_polys
+            .iter()
+            .rev()
+            .fold(running.error.clone(), |acc, t_i| {
+                let acc = acc + (t_i * r_inter);
+                r_inter *= r;
+                acc
+            });
+        running.advice = running
+            .advice
+            .iter()
+            .zip(current.advice.iter())
+            .map(|(this, current)| this.fold(current, r))
+            .collect();
+        running.challenges = running
+            .challenges
+            .iter()
+            .zip(current.challenges.iter())
+            .map(|(this, current)| this + (current * r))
+            .collect();
+        running.y = running
+            .y
+            .iter()
+            .zip(current.y.iter())
+            .map(|(this, current)| this + (current * r))
+            .collect();
+
+        running.u = running.u + (current.u * r);
     }
 }
 
@@ -86,15 +91,15 @@ fn check(instance: &Instance, fixed: &[Polynomial], evaluator: &MultiGraphEvalua
             &0,
             fixed,
             //
-            &[],
-            &[],
-            &[],
-            &1,
-            //
             &instance.advice,
             &instance.challenges,
             &instance.y,
             &instance.u,
+            //
+            &[],
+            &[],
+            &[],
+            &1,
         );
         error.0[idx] = value;
     }
@@ -108,7 +113,7 @@ fn test_sangria() {
 
     let size = 4;
 
-    let rand_advices = |size: usize, q_poly: Polynomial| -> Vec<Polynomial> {
+    let rand_advices_0 = |size: usize, q_poly: Polynomial| -> Vec<Polynomial> {
         let a_poly = Polynomial::rand(size);
         let b_poly = Polynomial::rand(size);
         let c_poly = a_poly
@@ -129,33 +134,70 @@ fn test_sangria() {
         vec![a_poly, b_poly, c_poly]
     };
 
+    let rand_advices_1 = |size: usize, q_poly: Polynomial| -> Vec<Polynomial> {
+        let a_poly = Polynomial::rand(size);
+        let b_poly = Polynomial::rand(size);
+        let c_poly = a_poly
+            .0
+            .iter()
+            .zip(b_poly.0.iter())
+            .zip(q_poly.0.iter())
+            .map(|((a, b), q)| {
+                if *q == 1 {
+                    a + b
+                } else {
+                    let rng = &mut OsRng;
+                    rng.gen()
+                }
+            })
+            .collect::<Vec<_>>();
+        let c_poly = Polynomial(c_poly);
+        vec![a_poly, b_poly, c_poly]
+    };
+
     let a = advice("a", 0, 0);
     let b = advice("b", 1, 0);
     let c = advice("c", 2, 0);
     let q0 = fixed("q0", 0, 0);
+    let gate_0 = (a.clone() * b.clone() - c.clone()) * q0.clone();
+    let q_poly_0 = Polynomial(vec![1, 1, 1, 1]);
 
-    let gate = (a.clone() * b.clone() - c.clone()) * q0.clone();
-    let q_poly = Polynomial(vec![1, 1, 1, 1]);
+    let a = advice("a", 3, 0);
+    let b = advice("b", 4, 0);
+    let c = advice("c", 5, 0);
+    let q0 = fixed("q0", 1, 0);
+    let gate_1 = (a.clone() + b.clone() - c.clone()) * q0.clone();
+    let q_poly_1 = Polynomial(vec![1, 1, 1, 1]);
 
-    let evaluator = MultiGraphEvaluator::from(&vec![gate.clone()]);
+    let evaluator = MultiGraphEvaluator::from(&vec![gate_0.clone(), gate_1.clone()]);
 
     let mut running_instance = Instance {
-        advice: vec![Polynomial::empty(size); 3],
+        advice: vec![Polynomial::empty(size); 6],
         challenges: vec![],
-        y: vec![rand_scalar()],
+        y: vec![rand_scalar(), rand_scalar()],
         error: Polynomial::empty(size),
         u: 1,
     };
-    let fixed = &[q_poly.clone()];
+    let fixed = &[q_poly_0.clone(), q_poly_1.clone()];
+    // empty instance should pass
+    check(&running_instance, fixed, &evaluator);
 
-    for _ in 0..1000 {
+    for i in 0..1000 {
         let data = &mut evaluator.instance();
         let number_of_levels = evaluator.number_of_levels();
 
+        let advice_0 = rand_advices_0(size, q_poly_0.clone());
+        let advice_1 = rand_advices_1(size, q_poly_1.clone());
+
+        let advice = advice_0
+            .iter()
+            .chain(advice_1.iter())
+            .cloned()
+            .collect::<Vec<_>>();
         let current_instance = Instance {
-            advice: rand_advices(size, q_poly.clone()),
+            advice,
             challenges: vec![],
-            y: vec![rand_scalar()],
+            y: vec![rand_scalar(), rand_scalar()],
             error: Polynomial::empty(size),
             u: 1,
         };
@@ -189,11 +231,14 @@ fn test_sangria() {
             }
         }
 
-        assert!(cross_polys.last().unwrap().is_zero());
+        assert!(cross_polys.first().unwrap().is_zero());
+        if i == 0 {
+            assert!(cross_polys.last().unwrap().is_zero());
+        }
 
         let inter_polys = &cross_polys[1..cross_polys.len() - 1];
         let r = rand_scalar();
-        running_instance = running_instance.fold(current_instance, inter_polys, r);
+        running_instance.fold(current_instance, inter_polys, r);
         // verify folded instance
         check(&running_instance, fixed, &evaluator)
     }
