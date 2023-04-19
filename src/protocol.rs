@@ -42,18 +42,17 @@ struct Instance {
 impl Instance {
     fn fold(&mut self, current: Self, inter_polys: &[Polynomial], r: F) {
         let running = self;
-        let mut r_inter = r;
         assert!(current.error.is_zero());
         assert!(current.u == 1);
 
-        running.error = inter_polys
-            .iter()
-            .rev()
-            .fold(running.error.clone(), |acc, t_i| {
-                let acc = acc + (t_i * r_inter);
-                r_inter *= r;
-                acc
-            });
+        running.error = running.error.clone()
+            + inter_polys
+                .iter()
+                .skip(1)
+                .fold(inter_polys[0].clone() * r, |acc, t_i| {
+                    (acc + t_i.clone()) * r
+                });
+
         running.advice = running
             .advice
             .iter()

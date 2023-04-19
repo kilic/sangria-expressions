@@ -39,8 +39,8 @@ impl MultiGraphEvaluator {
         let mut evaluator = MultiGraphEvaluator::new(number_of_levels);
 
         let mut parts = vec![vec![]; number_of_levels];
-        for crossed_expression in folding_expression.iter() {
-            let expressions = crossed_expression.into_expressions();
+        for folding_gate in folding_expression.iter() {
+            let expressions = folding_gate.into_expressions();
             for (level, expr) in expressions.iter().enumerate() {
                 parts[level].push(expr.clone());
             }
