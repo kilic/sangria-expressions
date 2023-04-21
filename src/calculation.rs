@@ -26,7 +26,7 @@ impl Calculation {
         // intermediaties
         row_index: usize,
         intermediates: &[F],
-        previous_value: &F, // TODO: this can be any value maybe better call it as 'aux'
+
         // constants
         constants: &[F],
         fixed_values: &[Polynomial],
@@ -38,7 +38,6 @@ impl Calculation {
             value.get(
                 row_index,
                 intermediates,
-                previous_value,
                 constants,
                 fixed_values,
                 current_instance,

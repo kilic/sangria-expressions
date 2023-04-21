@@ -263,7 +263,7 @@ fn check(instance: &Instance, fixed: &[Polynomial], evaluator: &Evaluator) {
     let size = instance.error.len();
     let mut error = Polynomial::empty(size);
     for index in 0..size {
-        let value = evaluator.eval(data, 0, index, &0, fixed, instance, &Instance::empty(size));
+        let value = evaluator.eval(data, 0, index, fixed, instance, &Instance::empty(size));
         error.0[index] = value;
     }
     assert_eq!(instance.error, error);
@@ -392,7 +392,6 @@ fn test_sangria() {
                         intermediates,
                         level,
                         row_index,
-                        &0,
                         &fixed_polys,
                         &current_instance,
                         &running_instance,

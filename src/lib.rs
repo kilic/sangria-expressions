@@ -63,7 +63,6 @@ impl Instance {
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd)]
 pub enum ValueSource {
     Intermediate(usize),
-    PreviousValue(),
     // constants
     Fixed(usize),
     Scalar(usize),
@@ -89,7 +88,6 @@ impl ValueSource {
         // intermediaties
         row_index: usize,
         intermediates: &[F],
-        previous_value: &F, // TODO: this can be any value maybe better call it as 'aux'
         // constants
         constants: &[F],
         fixed_values: &[Polynomial],
@@ -99,7 +97,6 @@ impl ValueSource {
     ) -> F {
         match self {
             ValueSource::Intermediate(index) => intermediates[*index],
-            ValueSource::PreviousValue() => *previous_value,
             // variables
             ValueSource::Value(index) => current_instance.values[*index][row_index],
             ValueSource::Seperator(index) => current_instance.seperators[*index],

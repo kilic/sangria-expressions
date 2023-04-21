@@ -248,8 +248,6 @@ impl Evaluator {
         intermediates: &mut [F],
         level: usize,
         row_index: usize,
-
-        previous_value: &F,
         fixed: &[Polynomial],
         //
         current_instance: &Instance,
@@ -273,7 +271,6 @@ impl Evaluator {
             intermediates[info.target] = info.calculation.eval(
                 row_index,
                 intermediates,
-                previous_value,
                 &self.constants,
                 fixed,
                 current_instance,
