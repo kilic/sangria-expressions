@@ -1,10 +1,10 @@
 use crate::{
     poly::{Polynomial, F},
-    ValueSource,
+    Instance, ValueSource,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Calculation {
+pub(crate) enum Calculation {
     Add(ValueSource, ValueSource),
     Sub(ValueSource, ValueSource),
     Mul(ValueSource, ValueSource),
@@ -15,47 +15,34 @@ pub enum Calculation {
 }
 
 #[derive(Clone, Debug)]
-pub struct CalculationInfo {
-    pub calculation: Calculation,
-    pub target: usize,
+pub(crate) struct CalculationInfo {
+    pub(crate) calculation: Calculation,
+    pub(crate) target: usize,
 }
 
 impl Calculation {
-    pub fn evaluate(
+    pub(crate) fn eval(
         &self,
         // intermediaties
-        rotations: &[usize],
+        row_index: usize,
         intermediates: &[F],
         previous_value: &F, // TODO: this can be any value maybe better call it as 'aux'
         // constants
         constants: &[F],
         fixed_values: &[Polynomial],
-        // variables
-        advice_values: &[Polynomial],
-        challenges: &[F],
-        y: &[F],
-        u: &F,
-        // running variables
-        running_advice_values: &[Polynomial],
-        running_challenges: &[F],
-        running_y: &[F],
-        running_u: &F,
+
+        current_instance: &Instance,
+        running_instance: &Instance,
     ) -> F {
         let get_value = |value: &ValueSource| {
             value.get(
-                rotations,
+                row_index,
                 intermediates,
                 previous_value,
                 constants,
                 fixed_values,
-                advice_values,
-                challenges,
-                y,
-                u,
-                running_advice_values,
-                running_challenges,
-                running_y,
-                running_u,
+                current_instance,
+                running_instance,
             )
         };
         match self {

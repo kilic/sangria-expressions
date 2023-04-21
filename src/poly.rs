@@ -35,8 +35,8 @@ impl Polynomial {
         use rand_core::OsRng;
         let rng = &mut OsRng;
         let mut coeffs = vec![0; size];
-        for i in 0..size {
-            coeffs[i] = rng.gen();
+        for coeff in coeffs.iter_mut() {
+            *coeff = rng.gen();
         }
         Self(coeffs)
     }
@@ -44,6 +44,10 @@ impl Polynomial {
     pub fn empty(size: usize) -> Self {
         let coeffs = vec![0; size];
         Self(coeffs)
+    }
+
+    pub fn len(&self) -> usize {
+        self.0.len()
     }
 
     pub fn fold(&self, other: &Polynomial, r: F) -> Self {

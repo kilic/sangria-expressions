@@ -7,27 +7,57 @@ pub mod poly;
 #[cfg(test)]
 pub mod protocol;
 
-#[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct Rotation(pub i32);
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct FixedQuery {
-    pub index: usize,
-    pub name: String,
-    pub rotation: Rotation,
+#[derive(Debug, Clone)]
+pub struct Instance {
+    values: Vec<Polynomial>,
+    seperators: Vec<F>,
+    u: F,
+    error: Polynomial,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AdviceQuery {
-    pub index: usize,
-    pub name: String,
-    pub rotation: Rotation,
-}
+impl Instance {
+    pub fn empty(size: usize) -> Self {
+        Self {
+            values: vec![],
+            seperators: vec![],
+            u: 1,
+            error: Polynomial::empty(size),
+        }
+    }
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq, Hash, PartialOrd, Ord)]
-pub struct Challenge {
-    pub index: usize,
-    pub phase: u8,
+    pub fn size(&self) -> usize {
+        self.error.len()
+    }
+
+    pub fn fold(&mut self, current: Self, inter_polys: &[Polynomial], r: F) {
+        let running = self;
+        assert!(current.error.is_zero());
+        assert!(current.u == 1);
+
+        running.error = running.error.clone()
+            + inter_polys
+                .iter()
+                .skip(1)
+                .fold(inter_polys[0].clone() * r, |acc, t_i| {
+                    (acc + t_i.clone()) * r
+                });
+
+        running.values = running
+            .values
+            .iter()
+            .zip(current.values.iter())
+            .map(|(this, current)| this.fold(current, r))
+            .collect();
+
+        running.seperators = running
+            .seperators
+            .iter()
+            .zip(current.seperators.iter())
+            .map(|(this, current)| this + (current * r))
+            .collect();
+
+        running.u += current.u * r;
+    }
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd)]
@@ -35,18 +65,16 @@ pub enum ValueSource {
     Intermediate(usize),
     PreviousValue(),
     // constants
-    Fixed(usize, usize),
+    Fixed(usize),
     Scalar(usize),
     // variables
-    Advice(usize, usize),
-    Challenge(usize),
-    Y(usize),
+    Value(usize),
     U(),
+    Seperator(usize),
     // running variables
-    RunningAdvice(usize, usize),
-    RunningChallenge(usize),
+    RunningValue(usize),
     RunningU(),
-    RunningY(usize),
+    RunningSeperator(usize),
 }
 
 impl Default for ValueSource {
@@ -56,48 +84,33 @@ impl Default for ValueSource {
 }
 
 impl ValueSource {
-    pub fn get(
+    pub(crate) fn get(
         &self,
         // intermediaties
-        rotations: &[usize],
+        row_index: usize,
         intermediates: &[F],
         previous_value: &F, // TODO: this can be any value maybe better call it as 'aux'
         // constants
         constants: &[F],
         fixed_values: &[Polynomial],
-        // variables
-        advice_values: &[Polynomial],
-        challenges: &[F],
-        y: &[F],
-        u: &F,
-        // running variables
-        running_advice_values: &[Polynomial],
-        running_challenges: &[F],
-        runnig_y: &[F],
-        running_u: &F,
+
+        current_instance: &Instance,
+        running_instance: &Instance,
     ) -> F {
         match self {
-            ValueSource::Intermediate(idx) => intermediates[*idx],
+            ValueSource::Intermediate(index) => intermediates[*index],
             ValueSource::PreviousValue() => *previous_value,
             // variables
-            ValueSource::Advice(column_index, rotation) => {
-                advice_values[*column_index][rotations[*rotation]]
-            }
-            ValueSource::Challenge(index) => challenges[*index],
-            ValueSource::Y(index) => y[*index],
-            ValueSource::U() => *u,
+            ValueSource::Value(index) => current_instance.values[*index][row_index],
+            ValueSource::Seperator(index) => current_instance.seperators[*index],
+            ValueSource::U() => current_instance.u,
             // running variables
-            ValueSource::RunningAdvice(column_index, rotation) => {
-                running_advice_values[*column_index][rotations[*rotation]]
-            }
-            ValueSource::RunningChallenge(index) => running_challenges[*index],
-            ValueSource::RunningY(index) => runnig_y[*index],
-            ValueSource::RunningU() => *running_u,
+            ValueSource::RunningValue(index) => running_instance.values[*index][row_index],
+            ValueSource::RunningSeperator(index) => running_instance.seperators[*index],
+            ValueSource::RunningU() => running_instance.u,
             // constants
-            ValueSource::Scalar(idx) => constants[*idx],
-            ValueSource::Fixed(column_index, rotation) => {
-                fixed_values[*column_index][rotations[*rotation]]
-            }
+            ValueSource::Scalar(index) => constants[*index],
+            ValueSource::Fixed(column_index) => fixed_values[*column_index][row_index],
         }
     }
 }

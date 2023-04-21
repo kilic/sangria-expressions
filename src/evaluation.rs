@@ -1,52 +1,58 @@
 use crate::{
     calculation::{Calculation, CalculationInfo},
-    expression::{Constant, Expression, FlatExpression, Folding, FoldingExpression, Variable},
+    expression::{Constant, Expression, Folding, Variable},
     poly::{Polynomial, F},
-    Rotation, ValueSource,
+    Instance, ValueSource,
 };
 
-#[derive(Default, Debug)]
-pub struct EvaluationData {
-    pub intermediates: Vec<F>,
-    pub rotations: Vec<usize>,
-}
-
-impl MultiGraphEvaluator {
-    pub fn from(gates: &Vec<Expression>) -> Self {
+impl Evaluator {
+    // pub fn from(gates: &Vec<Expression>) -> Self {
+    pub fn from(gates: impl Iterator<Item = Expression>) -> Self {
+        let mut gates = gates.collect::<Vec<_>>();
         assert!(!gates.is_empty());
-        let inject_seperator = if gates.len() == 1 { false } else { true };
 
-        let flat_expressions: Vec<FlatExpression> = gates.iter().map(|gate| gate.into()).collect();
-        let max_variable_degree = flat_expressions
+        gates.iter_mut().for_each(|gate| {
+            let degree = gate.folding_degree();
+            assert!(degree != 0);
+            *gate = gate.relax();
+            assert_eq!(gate.folding_degree(), degree);
+        });
+
+        let max_degree = gates
             .iter()
-            .map(|expr| expr.max_variable_degree())
+            .map(|gate| gate.folding_degree())
             .max()
             .unwrap();
 
-        // vector of flattened expressions for each gate
-        let folding_expression: Vec<FoldingExpression> = flat_expressions
+        gates.iter_mut().for_each(|gate| {
+            let degree = gate.folding_degree();
+            let dif = max_degree - degree;
+            if dif != 0 {
+                let u: Expression = Variable::U().into();
+                let u_power = u.pow(dif);
+                *gate = gate.clone() * u_power;
+                assert_eq!(gate.folding_degree(), max_degree);
+            }
+        });
+
+        let number_of_levels = max_degree + 2; //  one for multiplication and one for seperator
+        let crossed_gates: Vec<Vec<Expression>> = gates
             .iter()
             .enumerate()
-            .map(|(gate_index, expr)| expr.cross(max_variable_degree, gate_index, inject_seperator))
+            .map(|(index, gate)| {
+                let crossed_gate = gate.cross_with_seperator(index);
+                assert_eq!(crossed_gate.len(), number_of_levels);
+                crossed_gate
+            })
             .collect();
 
-        let number_of_levels = if inject_seperator {
-            max_variable_degree + 2
-        } else {
-            max_variable_degree + 1
-        };
-
-        let mut evaluator = MultiGraphEvaluator::new(number_of_levels);
-
-        let mut parts = vec![vec![]; number_of_levels];
-        for folding_gate in folding_expression.iter() {
-            let expressions = folding_gate.into_expressions();
-            for (level, expr) in expressions.iter().enumerate() {
-                parts[level].push(expr.clone());
-            }
-        }
-        for (level, parts) in parts.iter().enumerate() {
-            let level_sum = Expression::sum(parts);
+        let mut evaluator = Evaluator::new(number_of_levels);
+        for level in 0..number_of_levels {
+            let gate_in_level = crossed_gates
+                .iter()
+                .map(|crossed_gate| crossed_gate[level].clone())
+                .collect::<Vec<_>>();
+            let level_sum = Expression::sum(&gate_in_level);
             evaluator.add_expression(&level_sum, level);
         }
 
@@ -55,19 +61,17 @@ impl MultiGraphEvaluator {
 }
 
 #[derive(Clone, Debug)]
-pub struct MultiGraphEvaluator {
-    pub constants: Vec<F>,
-    pub rotations: Vec<i32>,
-    pub calculations: Vec<CalculationInfo>,
-    pub level_map: Vec<Vec<usize>>,
-    pub num_intermediates: usize,
+pub struct Evaluator {
+    pub(crate) constants: Vec<F>,
+    pub(crate) calculations: Vec<CalculationInfo>,
+    pub(crate) level_map: Vec<Vec<usize>>,
+    pub(crate) num_intermediates: usize,
 }
 
-impl MultiGraphEvaluator {
-    pub fn new(number_of_levels: usize) -> Self {
+impl Evaluator {
+    fn new(number_of_levels: usize) -> Self {
         Self {
             constants: vec![0, 1, 2],
-            rotations: Vec::new(),
             calculations: Vec::new(),
             level_map: vec![vec![]; number_of_levels],
             num_intermediates: 0,
@@ -78,22 +82,8 @@ impl MultiGraphEvaluator {
         self.level_map.len()
     }
 
-    pub fn instance(&self) -> EvaluationData {
-        EvaluationData {
-            intermediates: vec![0; self.num_intermediates],
-            rotations: vec![0usize; self.rotations.len()],
-        }
-    }
-
-    fn add_rotation(&mut self, rotation: &Rotation) -> usize {
-        let position = self.rotations.iter().position(|&c| c == rotation.0);
-        match position {
-            Some(pos) => pos,
-            None => {
-                self.rotations.push(rotation.0);
-                self.rotations.len() - 1
-            }
-        }
+    pub fn intermediates(&self) -> Vec<F> {
+        vec![0; self.num_intermediates]
     }
 
     fn add_constant(&mut self, constant: &F) -> ValueSource {
@@ -119,8 +109,8 @@ impl MultiGraphEvaluator {
             }
             None => {
                 let target = self.num_intermediates;
-                let idx = self.calculations.len();
-                self.level_map[level].push(idx);
+                let index = self.calculations.len();
+                self.level_map[level].push(index);
                 self.calculations.push(CalculationInfo {
                     calculation,
                     target,
@@ -132,7 +122,7 @@ impl MultiGraphEvaluator {
     }
 
     /// Generates an optimized evaluation for the expression
-    pub fn add_expression(&mut self, expr: &Expression, level: usize) -> ValueSource {
+    pub(crate) fn add_expression(&mut self, expr: &Expression, level: usize) -> ValueSource {
         match expr {
             // variables
             Expression::Variable(folding) => match folding {
@@ -140,49 +130,32 @@ impl MultiGraphEvaluator {
                     Variable::U() => {
                         self.add_calculation(Calculation::Store(ValueSource::U()), level)
                     }
-                    Variable::Y(idx) => {
-                        self.add_calculation(Calculation::Store(ValueSource::Y(*idx)), level)
-                    }
-                    Variable::Challenge(challenge) => self.add_calculation(
-                        Calculation::Store(ValueSource::Challenge(challenge.index)),
-                        level,
-                    ),
-                    Variable::Advice(query) => {
-                        let rot_idx = self.add_rotation(&query.rotation);
-                        self.add_calculation(
-                            Calculation::Store(ValueSource::Advice(query.index, rot_idx)),
-                            level,
-                        )
+                    Variable::Seperator(index) => self
+                        .add_calculation(Calculation::Store(ValueSource::Seperator(*index)), level),
+
+                    Variable::Value(index) => {
+                        self.add_calculation(Calculation::Store(ValueSource::Value(*index)), level)
                     }
                 },
                 Folding::Running(variable) => match variable {
                     Variable::U() => {
                         self.add_calculation(Calculation::Store(ValueSource::RunningU()), level)
                     }
-                    Variable::Y(idx) => {
-                        self.add_calculation(Calculation::Store(ValueSource::RunningY(*idx)), level)
-                    }
-                    Variable::Challenge(challenge) => self.add_calculation(
-                        Calculation::Store(ValueSource::RunningChallenge(challenge.index)),
+                    Variable::Seperator(index) => self.add_calculation(
+                        Calculation::Store(ValueSource::RunningSeperator(*index)),
                         level,
                     ),
-                    Variable::Advice(query) => {
-                        let rot_idx = self.add_rotation(&query.rotation);
-                        self.add_calculation(
-                            Calculation::Store(ValueSource::RunningAdvice(query.index, rot_idx)),
-                            level,
-                        )
-                    }
+
+                    Variable::Value(index) => self.add_calculation(
+                        Calculation::Store(ValueSource::RunningValue(*index)),
+                        level,
+                    ),
                 },
             },
             // constants
             Expression::Constant(constant) => match constant {
-                Constant::Fixed(query) => {
-                    let rot_idx = self.add_rotation(&query.rotation);
-                    self.add_calculation(
-                        Calculation::Store(ValueSource::Fixed(query.index, rot_idx)),
-                        level,
-                    )
+                Constant::Fixed(index) => {
+                    self.add_calculation(Calculation::Store(ValueSource::Fixed(*index)), level)
                 }
                 Constant::Scalar(e) => self.add_constant(e),
             },
@@ -270,35 +243,18 @@ impl MultiGraphEvaluator {
         }
     }
 
-    pub fn evaluate(
+    pub fn eval(
         &self,
-        data: &mut EvaluationData,
+        intermediates: &mut [F],
         level: usize,
-        idx: usize,
-        rot_scale: i32,
-        isize: i32,
-        //
+        row_index: usize,
+
         previous_value: &F,
         fixed: &[Polynomial],
         //
-        advice: &[Polynomial],
-        challenges: &[F],
-        y: &[F],
-        u: &F,
-        //
-        running_advice: &[Polynomial],
-        running_challenges: &[F],
-        running_y: &[F],
-        running_u: &F,
+        current_instance: &Instance,
+        running_instance: &Instance,
     ) -> F {
-        fn get_rotation_idx(idx: usize, rot: i32, rot_scale: i32, isize: i32) -> usize {
-            (((idx as i32) + (rot * rot_scale)).rem_euclid(isize)) as usize
-        }
-
-        for (rot_idx, rot) in self.rotations.iter().enumerate() {
-            data.rotations[rot_idx] = get_rotation_idx(idx, *rot, rot_scale, isize);
-        }
-
         let calculation_indexes = &self.level_map[level];
         let calculations = self
             .calculations
@@ -314,28 +270,19 @@ impl MultiGraphEvaluator {
             .collect::<Vec<_>>();
 
         for info in calculations.iter() {
-            data.intermediates[info.target] = info.calculation.evaluate(
-                &data.rotations,
-                &data.intermediates,
+            intermediates[info.target] = info.calculation.eval(
+                row_index,
+                intermediates,
                 previous_value,
-                // cosntants
                 &self.constants,
                 fixed,
-                //
-                advice,
-                challenges,
-                y,
-                u,
-                //
-                running_advice,
-                running_challenges,
-                running_y,
-                running_u,
+                current_instance,
+                running_instance,
             );
         }
 
         if let Some(calc) = calculations.last() {
-            data.intermediates[calc.target]
+            intermediates[calc.target]
         } else {
             0
         }

@@ -1,85 +1,22 @@
+use crate::{
+    poly::{Polynomial, F},
+    Instance,
+};
 use std::{
     cmp::Ordering,
     ops::{Add, Mul, Neg, Sub},
 };
 
-use crate::{poly::F, AdviceQuery, Challenge, FixedQuery};
-
-/// Sub-expression for variable sources throughout folding
+/// Sub-expression for values sources throughout folding
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Variable {
     /// Folding constant
     U(),
-    /// Challenges
-    Challenge(Challenge),
-    /// Witnesses polynomials
-    Advice(AdviceQuery),
+    /// Witness value with index
+    Value(usize),
     /// Gate seperator challenge
-    Y(usize), // TODO: handle the case that first gate can be $y = 1$
+    Seperator(usize), // TODO: handle the case that first gate can be $y = 1$
 }
-
-/// Sub-expression for constant sources throughout folding
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Constant {
-    /// Constant scalars
-    Scalar(F),
-    /// Fixed polynomials
-    Fixed(FixedQuery),
-}
-
-/// Sub-expression for folding variable sources
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum Folding {
-    /// Fresh variable instances
-    Current(Variable),
-    /// Running variable instances
-    Running(Variable),
-}
-
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub enum Expression {
-    // Sources
-    Variable(Folding),
-    Constant(Constant),
-    // Relations
-    Negated(Box<Expression>),
-    Sum(Box<Expression>, Box<Expression>),
-    Product(Box<Expression>, Box<Expression>),
-    Scaled(Box<Expression>, F),
-}
-
-/// Single term with arbitrary number of variables and constants
-/// `term = (if negated -1 else 1) * product(variables) * product(constants)`
-#[derive(Clone, Debug)]
-pub struct Term {
-    pub variables: Vec<Variable>,
-    pub constants: Vec<Constant>,
-    pub negated: bool,
-}
-
-/// Flatenned expression as
-/// `expr = term_1 + term_2 + ... + term_n`
-#[derive(Clone, Debug)]
-pub struct FlatExpression(Vec<Term>);
-
-/// Residues of folding product contains products current and running variables including `u` and `y`
-#[derive(Clone, Debug, Default)]
-pub struct CrossTerm(Vec<Folding>);
-
-/// Crossed term with levels of slack collection
-#[derive(Clone, Debug)]
-pub struct FoldingTerm {
-    /// Residues of folding product indexed by level
-    pub cross_terms: Vec<Vec<CrossTerm>>,
-    /// Common constants for each cross level
-    pub constants: Vec<Constant>,
-    /// Negated flag
-    pub negated: bool,
-}
-
-/// Folding flat expression
-#[derive(Clone, Debug)]
-pub struct FoldingExpression(Vec<FoldingTerm>);
 
 impl Variable {
     fn current(&self) -> Folding {
@@ -88,6 +25,24 @@ impl Variable {
     fn running(&self) -> Folding {
         Folding::Running(self.clone())
     }
+}
+
+/// Sub-expression for constant sources throughout folding
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Constant {
+    /// Constant scalars
+    Scalar(F),
+    /// Fixed values with index
+    Fixed(usize),
+}
+
+/// Sub-expression for folding values sources
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Folding {
+    /// Fresh values instances
+    Current(Variable),
+    /// Running values instances
+    Running(Variable),
 }
 
 impl Folding {
@@ -111,182 +66,48 @@ impl Ord for Folding {
     }
 }
 
-impl Term {
-    /// Given the context of the expression generate cross terms
-    pub fn cross(
-        &self,
-        max_variable_degree: usize,
-        gate_index: usize,
-        inject_seperator: bool,
-    ) -> FoldingTerm {
-        // recursively climb down the tree and collect combinations
-        fn cross(
-            // unfolded input variables
-            variables: &Vec<Variable>,
-            // folding variables for each degree
-            cross_terms: &mut Vec<Vec<CrossTerm>>,
-            // degree of recursion
-            degree: usize,
-            // running product of variables
-            running: CrossTerm,
-            // index of the folding product
-            path: Vec<usize>,
-        ) {
-            let (running_left, running_right) = if degree == 0 {
-                let running_left = CrossTerm(vec![variables[0].current()]);
-                let running_rigth = CrossTerm(vec![variables[0].running()]);
-                (running_left, running_rigth)
-            } else {
-                let mut running_left = running.clone();
-                let mut running_rigth = running.clone();
-                running_left.0.push(variables[degree].current());
-                running_rigth.0.push(variables[degree].running());
-                (running_left, running_rigth)
-            };
-            let degree = degree + 1;
-            if degree == variables.len() {
-                let left_index = path.iter().fold(0, |next, acc| acc + next);
-                let right_index = left_index + 1;
-                cross_terms[left_index].push(running_left);
-                cross_terms[right_index].push(running_right);
-            } else {
-                let mut left_path = path.clone();
-                let mut right_path = path.clone();
-                left_path.push(0usize);
-                right_path.push(1usize);
-                cross(variables, cross_terms, degree, running_left, left_path);
-                cross(variables, cross_terms, degree, running_right, right_path);
-            }
-        }
-        assert!(self.variables.len() <= max_variable_degree);
-
-        let mut variables = self.variables.clone();
-
-        // inject folding terms `u` according to the degree
-        for _ in 0..max_variable_degree - self.variables.len() {
-            variables.push(Variable::U())
-        }
-
-        // inject `y` the gate seperator
-        let mut cross_terms = if inject_seperator {
-            variables.push(Variable::Y(gate_index));
-            vec![vec![]; max_variable_degree + 2]
-        } else {
-            vec![vec![]; max_variable_degree + 1]
-        };
-
-        cross(
-            &variables,
-            &mut cross_terms,
-            0,
-            CrossTerm::default(),
-            vec![],
-        );
-
-        // trim all-running that is (0,0,0, ...) and all-current (1,1,1, ...) cases
-        // cross_terms.pop();
-        // let cross_terms = cross_terms[1..].to_vec();
-
-        FoldingTerm {
-            cross_terms,
-            constants: self.constants.clone(),
-            negated: self.negated,
-        }
-    }
-}
-
-impl FlatExpression {
-    pub fn max_variable_degree(&self) -> usize {
-        let mut max_degree = 0;
-        for term in self.0.iter() {
-            max_degree = max_degree.max(term.variables.len());
-        }
-        max_degree
-    }
-
-    pub fn cross(
-        &self,
-        max_variable_degree: usize,
-        gate_index: usize,
-        inject_seperator: bool,
-    ) -> FoldingExpression {
-        assert!(self.max_variable_degree() <= max_variable_degree);
-        let terms = self
-            .0
-            .iter()
-            .map(|e| e.cross(max_variable_degree, gate_index, inject_seperator))
-            .collect::<Vec<_>>();
-        FoldingExpression(terms)
-    }
-
-    pub fn identifier(&self) -> String {
-        let expr: Expression = self.into();
-        expr.identifier()
-    }
-}
-
-impl FoldingExpression {
-    pub fn into_expressions(&self) -> Vec<Expression> {
-        let number_of_levels = self.number_of_levels();
-        (0..number_of_levels)
-            .map(|i| {
-                let expression = self
-                    .0
-                    .iter()
-                    .map(|folding| {
-                        let cross_terms = &folding.cross_terms[i];
-                        let cross_terms = cross_terms
-                            .iter()
-                            .map(|e| e.into())
-                            .collect::<Vec<Expression>>();
-                        let cross_terms = Expression::sum(&cross_terms);
-                        let constants = folding
-                            .constants
-                            .iter()
-                            .map(|constant| constant.into())
-                            .collect::<Vec<Expression>>();
-                        let constants = Expression::product(&constants);
-                        if folding.negated {
-                            -constants * cross_terms
-                        } else {
-                            constants * cross_terms
-                        }
-                    })
-                    .collect::<Vec<Expression>>();
-                Expression::sum(&expression)
-            })
-            .collect()
-    }
-
-    fn number_of_levels(&self) -> usize {
-        let number_of_levels = self.0[0].cross_terms.len();
-        for folding in self.0.iter() {
-            assert_eq!(folding.cross_terms.len(), number_of_levels);
-        }
-        number_of_levels
-    }
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Expression {
+    // Sources
+    Variable(Folding),
+    Constant(Constant),
+    // Relations
+    Negated(Box<Expression>),
+    Sum(Box<Expression>, Box<Expression>),
+    Product(Box<Expression>, Box<Expression>),
+    Scaled(Box<Expression>, F),
 }
 
 impl Expression {
-    pub fn scalar(e: F) -> Self {
-        Constant::Scalar(e).into()
-    }
-
-    pub fn advice(e: AdviceQuery) -> Self {
-        Variable::Advice(e).current().into()
-    }
-
-    pub fn challenge(index: usize, phase: u8) -> Self {
-        Variable::Challenge(Challenge { index, phase })
-            .current()
+    pub fn eval_poly(
+        &self,
+        fixed: &[Polynomial],
+        current: &Instance,
+        running: &Instance,
+    ) -> Polynomial {
+        let size = current.error.len();
+        (0..size)
+            .map(|row_index| {
+                self.eval(
+                    &|a: F| -a,
+                    &|a, b| a + b,
+                    &|a, b| a * b,
+                    &|a, b| a * b,
+                    &|index| fixed[index][row_index],
+                    &|scalar| scalar,
+                    &|index| current.values[index][row_index],
+                    &|| current.u,
+                    &|index| current.seperators[index],
+                    &|index| running.values[index][row_index],
+                    &|| running.u,
+                    &|index| running.seperators[index],
+                )
+            })
+            .collect::<Vec<_>>()
             .into()
     }
 
-    pub fn fixed(e: FixedQuery) -> Self {
-        Constant::Fixed(e).into()
-    }
-
-    pub fn evaluate<T>(
+    pub fn eval<T>(
         &self,
         // relations
         negated: &impl Fn(T) -> T,
@@ -294,260 +115,175 @@ impl Expression {
         product: &impl Fn(T, T) -> T,
         scaled: &impl Fn(T, F) -> T,
         // constants
+        fixed: &impl Fn(usize) -> T,
         scalar: &impl Fn(F) -> T,
-        fixed_column: &impl Fn(FixedQuery) -> T,
-        // current variables
+        // valuess
+        values: &impl Fn(usize) -> T,
         u: &impl Fn() -> T,
-        challenge: &impl Fn(Challenge) -> T,
-        y: &impl Fn(usize) -> T,
-        advice_column: &impl Fn(AdviceQuery) -> T,
-        // running variables
+        seperator: &impl Fn(usize) -> T,
+
+        running_values: &impl Fn(usize) -> T,
         running_u: &impl Fn() -> T,
-        running_challenge: &impl Fn(Challenge) -> T,
-        running_y: &impl Fn(usize) -> T,
-        running_advice_column: &impl Fn(AdviceQuery) -> T,
+        running_seperator: &impl Fn(usize) -> T,
     ) -> T {
         match self {
-            // variables
             Expression::Variable(folding) => match folding {
-                Folding::Running(variable) => match variable {
-                    Variable::U() => running_u(),
-                    Variable::Y(idx) => running_y(*idx),
-                    Variable::Challenge(value) => running_challenge(value.clone()),
-                    Variable::Advice(query) => running_advice_column(query.clone()),
-                },
-                Folding::Current(variable) => match variable {
+                Folding::Current(var) => match var {
+                    Variable::Value(index) => values(*index),
                     Variable::U() => u(),
-                    Variable::Y(idx) => y(*idx),
-                    Variable::Challenge(value) => challenge(value.clone()),
-                    Variable::Advice(query) => advice_column(query.clone()),
+                    Variable::Seperator(index) => seperator(*index),
+                },
+                Folding::Running(var) => match var {
+                    Variable::Value(index) => running_values(*index),
+                    Variable::U() => running_u(),
+                    Variable::Seperator(index) => running_seperator(*index),
                 },
             },
-            // constants
             Expression::Constant(constant) => match constant {
-                Constant::Fixed(query) => fixed_column(query.clone()),
-                Constant::Scalar(e) => scalar(e.clone()),
+                Constant::Fixed(index) => fixed(*index),
+                Constant::Scalar(f) => scalar(*f),
             },
-            // relations
             Expression::Negated(a) => {
-                let a = a.evaluate(
+                let a = a.eval(
                     negated,
                     sum,
                     product,
                     scaled,
+                    fixed,
                     scalar,
-                    fixed_column,
+                    values,
                     u,
-                    challenge,
-                    y,
-                    advice_column,
+                    seperator,
+                    running_values,
                     running_u,
-                    running_challenge,
-                    running_y,
-                    running_advice_column,
+                    running_seperator,
                 );
                 negated(a)
             }
             Expression::Sum(a, b) => {
-                let a = a.evaluate(
+                let a = a.eval(
                     negated,
                     sum,
                     product,
                     scaled,
+                    fixed,
                     scalar,
-                    fixed_column,
+                    values,
                     u,
-                    challenge,
-                    y,
-                    advice_column,
+                    seperator,
+                    running_values,
                     running_u,
-                    running_challenge,
-                    running_y,
-                    running_advice_column,
+                    running_seperator,
                 );
-                let b = b.evaluate(
+                let b = b.eval(
                     negated,
                     sum,
                     product,
                     scaled,
+                    fixed,
                     scalar,
-                    fixed_column,
+                    values,
                     u,
-                    challenge,
-                    y,
-                    advice_column,
+                    seperator,
+                    running_values,
                     running_u,
-                    running_challenge,
-                    running_y,
-                    running_advice_column,
+                    running_seperator,
                 );
                 sum(a, b)
             }
             Expression::Product(a, b) => {
-                let a = a.evaluate(
+                let a = a.eval(
                     negated,
                     sum,
                     product,
                     scaled,
+                    fixed,
                     scalar,
-                    fixed_column,
+                    values,
                     u,
-                    challenge,
-                    y,
-                    advice_column,
+                    seperator,
+                    running_values,
                     running_u,
-                    running_challenge,
-                    running_y,
-                    running_advice_column,
+                    running_seperator,
                 );
-                let b = b.evaluate(
+                let b = b.eval(
                     negated,
                     sum,
                     product,
                     scaled,
+                    fixed,
                     scalar,
-                    fixed_column,
+                    values,
                     u,
-                    challenge,
-                    y,
-                    advice_column,
+                    seperator,
+                    running_values,
                     running_u,
-                    running_challenge,
-                    running_y,
-                    running_advice_column,
+                    running_seperator,
                 );
                 product(a, b)
             }
             Expression::Scaled(a, f) => {
-                let a = a.evaluate(
+                let a = a.eval(
                     negated,
                     sum,
                     product,
                     scaled,
+                    fixed,
                     scalar,
-                    fixed_column,
+                    values,
                     u,
-                    challenge,
-                    y,
-                    advice_column,
+                    seperator,
+                    running_values,
                     running_u,
-                    running_challenge,
-                    running_y,
-                    running_advice_column,
+                    running_seperator,
                 );
-                scaled(a, f.clone())
+                scaled(a, *f)
             }
         }
     }
-    pub fn product(expressions: &Vec<Self>) -> Self {
-        let mut expressions = expressions.clone();
+
+    // pub(crate) fn product(expressions: &Vec<Self>) -> Self {
+    //     let mut expressions = expressions.clone();
+    //     expressions.sort();
+    //     assert!(!expressions.is_empty());
+    //     expressions
+    //         .iter()
+    //         .skip(1)
+    //         .fold(expressions[0].clone(), |acc, expr| expr.clone() * acc)
+    // }
+
+    pub(crate) fn sum(expressions: &[Self]) -> Self {
+        let mut expressions = expressions.to_vec();
+        assert!(!expressions.is_empty());
         expressions.sort();
-        if expressions.len() > 0 {
-            expressions
-                .iter()
-                .skip(1)
-                .fold(expressions[0].clone(), |acc, expr| expr.clone() * acc)
-        } else {
-            Expression::scalar(1)
-        }
+        expressions
+            .iter()
+            .skip(1)
+            .fold(expressions[0].clone(), |acc, expr| expr.clone() + acc)
     }
-    pub fn sum(expressions: &Vec<Self>) -> Self {
-        let mut expressions = expressions.clone();
-        expressions.sort();
-        if expressions.len() > 0 {
-            expressions
-                .iter()
-                .skip(1)
-                .fold(expressions[0].clone(), |acc, expr| expr.clone() + acc)
-        } else {
-            Expression::scalar(0)
-        }
+
+    pub(crate) fn pow(&self, degree: usize) -> Self {
+        assert!(degree > 0);
+        (0..degree)
+            .skip(1)
+            .fold(self.clone(), |acc, _| acc * self.clone())
     }
-    fn flatten(&self) -> Vec<Self> {
-        match &self {
-            Expression::Sum(a, b) => a
-                .flatten()
-                .iter()
-                .chain(b.flatten().iter())
-                .cloned()
-                .collect(),
-            Expression::Product(a, b) => {
-                let a = a.flatten();
-                let b = b.flatten();
-                a.iter()
-                    .flat_map(|a_i| b.iter().map(|b_i| a_i.clone() * b_i.clone()))
-                    .collect()
-            }
-            Expression::Scaled(poly, k) => poly
-                .flatten()
-                .iter()
-                .map(|poly| poly.clone() * Expression::scalar(k.clone()))
-                .collect(),
-            _ => vec![self.clone()],
-        }
-    }
-    fn variables(&self) -> Vec<Variable> {
+
+    pub(crate) fn folding_degree(&self) -> usize {
         match self {
-            // return variables
             Expression::Variable(folding) => match folding {
-                Folding::Running(running) => unreachable!("expect current {:?}", running),
-                Folding::Current(variable) => match variable {
-                    Variable::U() => unreachable!("use before crossing"),
-                    _ => vec![variable.clone()],
+                Folding::Current(var) => match var {
+                    Variable::Value(_) => 1,
+                    Variable::U() => 1,
+                    Variable::Seperator(_) => unreachable!(),
                 },
+                Folding::Running(_) => unreachable!(),
             },
-            // filter out constants
-            Expression::Constant(_) => vec![],
-            // recurse over sub-expressions
-            Expression::Scaled(poly, _) => poly.variables(),
-            Expression::Product(a, b) => a
-                .variables()
-                .iter()
-                .chain(b.variables().iter())
-                .cloned()
-                .collect(),
-            Expression::Negated(a) => a.variables(),
-            Expression::Sum(_, _) => {
-                unreachable!("single term with variable degree is expected")
-            }
-        }
-    }
-
-    fn constants(&self) -> Vec<Constant> {
-        match self {
-            // filter out variables
-            Expression::Variable(_) => vec![],
-            // return constants
-            Expression::Constant(constant) => match constant {
-                _ => vec![constant.clone()],
-            },
-            // recurse over sub-expressions
-            Expression::Scaled(poly, _) => poly.constants(),
-            Expression::Product(a, b) => a
-                .constants()
-                .iter()
-                .chain(b.constants().iter())
-                .cloned()
-                .collect(),
-            Expression::Negated(a) => a.constants(),
-            Expression::Sum(_, _) => {
-                unreachable!("single term with variable degree is expected")
-            }
-        }
-    }
-
-    pub fn is_negated(&self) -> bool {
-        match self {
-            // atomics
-            Expression::Variable(_) => false,
-            Expression::Constant(_) => false,
-            // recurse over sub-expressions
-            Expression::Scaled(poly, _) => poly.is_negated(),
-            Expression::Product(a, b) => a.is_negated() ^ b.is_negated(),
-            Expression::Negated(a) => true ^ a.is_negated(),
-            Expression::Sum(_, _) => {
-                unreachable!("single term with variable degree is expected")
-            }
+            Expression::Constant(_) => 0,
+            Expression::Negated(a) => a.folding_degree(),
+            Expression::Sum(a, b) => std::cmp::max(a.folding_degree(), b.folding_degree()),
+            Expression::Product(a, b) => a.folding_degree() + b.folding_degree(),
+            Expression::Scaled(a, _) => a.folding_degree(),
         }
     }
 
@@ -559,38 +295,21 @@ impl Expression {
 
     fn write_identifier<W: std::io::Write>(&self, writer: &mut W) -> std::io::Result<()> {
         match self {
-            // variables
             Expression::Variable(folding) => match folding {
-                Folding::Running(variable) => match variable {
-                    Variable::U() => write!(writer, "u'"),
-                    Variable::Y(idx) => write!(writer, "y'_{}", idx),
-                    Variable::Challenge(challenge) => {
-                        write!(writer, "∂'_{}_{}", challenge.index, challenge.phase)
-                    }
-                    Variable::Advice(query) => {
-                        let name = query.name.as_str();
-                        write!(writer, "{name}'[{:?}]", query.rotation.0)
-                    }
-                },
-                Folding::Current(variable) => match variable {
+                Folding::Current(var) => match var {
+                    Variable::Value(index) => write!(writer, "a{index}"),
                     Variable::U() => write!(writer, "u"),
-                    Variable::Y(idx) => write!(writer, "y_{}", idx),
-                    Variable::Challenge(challenge) => {
-                        write!(writer, "∂_{}_{}", challenge.index, challenge.phase)
-                    }
-                    Variable::Advice(query) => {
-                        let name = query.name.as_str();
-                        write!(writer, "{name}[{:?}]", query.rotation.0)
-                    }
+                    Variable::Seperator(index) => write!(writer, "y{index}"),
+                },
+                Folding::Running(var) => match var {
+                    Variable::Value(index) => write!(writer, "a'{index}"),
+                    Variable::U() => write!(writer, "u'"),
+                    Variable::Seperator(index) => write!(writer, "y'{index}"),
                 },
             },
-            // constants
             Expression::Constant(constant) => match constant {
-                Constant::Fixed(query) => {
-                    let name = query.name.as_str();
-                    write!(writer, "{name}[{:?}]", query.rotation.0)
-                }
-                Constant::Scalar(e) => write!(writer, "{:?}", *e),
+                Constant::Fixed(index) => write!(writer, "q{index}"),
+                Constant::Scalar(f) => write!(writer, "{f:?}"),
             },
             Expression::Negated(a) => {
                 writer.write_all(b"( - ")?;
@@ -613,9 +332,134 @@ impl Expression {
             }
             Expression::Scaled(a, f) => {
                 a.write_identifier(writer)?;
-                write!(writer, "* {:?}", f)
+                write!(writer, "* {f:?}")
             }
         }
+    }
+
+    pub(crate) fn relax(&self) -> Self {
+        match self {
+            Expression::Variable(folding) => match folding {
+                Folding::Current(var) => match var {
+                    Variable::Value(index) => Variable::Value(*index).into(),
+                    Variable::U() => Variable::U().into(),
+                    Variable::Seperator(_) => unreachable!(),
+                },
+                Folding::Running(_) => unreachable!(),
+            },
+
+            Expression::Constant(constant) => Expression::Constant(constant.clone()),
+            Expression::Negated(a) => -a.relax(),
+            Expression::Sum(a, b) => {
+                let degree_a = a.folding_degree();
+                let degree_b = b.folding_degree();
+                let dif = degree_a.abs_diff(degree_b);
+                if dif == 0 {
+                    Expression::Sum(Box::new(a.relax()), Box::new(b.relax()))
+                } else {
+                    let u: Expression = Variable::U().into();
+                    let u_power = Box::new(u.pow(dif));
+                    if degree_a > degree_b {
+                        let b = Expression::Product(b.clone(), u_power);
+                        Expression::Sum(Box::new(a.relax()), Box::new(b.relax()))
+                    } else {
+                        let a = Expression::Product(a.clone(), u_power);
+                        Expression::Sum(Box::new(a.relax()), Box::new(b.relax()))
+                    }
+                }
+            }
+            Expression::Product(a, b) => {
+                Expression::Product(Box::new(a.relax()), Box::new(b.relax()))
+            }
+            Expression::Scaled(a, factor) => Expression::Scaled(Box::new(a.relax()), *factor),
+        }
+    }
+
+    pub(crate) fn cross(&self) -> Vec<Expression> {
+        match self {
+            Expression::Variable(folding) => match folding {
+                Folding::Current(var) => match var {
+                    Variable::Value(index) => vec![
+                        Variable::Value(*index).current().into(),
+                        Variable::Value(*index).running().into(),
+                    ],
+                    Variable::U() => vec![
+                        Variable::U().current().into(),
+                        Variable::U().running().into(),
+                    ],
+                    Variable::Seperator(_) => unreachable!(),
+                },
+                Folding::Running(_) => unreachable!(),
+            },
+
+            Expression::Constant(c) => vec![Expression::Constant(c.clone())],
+            // Expression::Negated(a) => a.cross(),
+            Expression::Negated(a) => {
+                let crossed = a.cross();
+                // TODO: hit this in expresion test!
+                crossed.iter().map(|a| -a.clone()).collect()
+            }
+            Expression::Sum(a, b) => {
+                let a = a.cross();
+                let b = b.cross();
+                assert_eq!(a.len(), b.len());
+                a.iter()
+                    .zip(b.iter())
+                    .map(|(a, b)| a.clone() + b.clone())
+                    .collect()
+            }
+            Expression::Product(a, b) => {
+                let terms_a = a.cross();
+                let terms_b = b.cross();
+
+                let degree = terms_a.len() + terms_b.len() - 1;
+                let mut terms: Vec<Expression> = Vec::with_capacity(degree);
+                for (i, a) in terms_a.iter().enumerate() {
+                    for (j, b) in terms_b.iter().enumerate() {
+                        let index = i + j;
+                        let expr = a.clone() * b.clone();
+                        if index >= terms.len() {
+                            terms.push(expr);
+                        } else {
+                            terms[index] = terms[index].clone() + expr;
+                        }
+                    }
+                }
+                terms
+            }
+            Expression::Scaled(a, factor) => {
+                let mut terms = a.cross();
+                terms.iter_mut().map(|a| a.clone() * *factor).collect()
+            }
+        }
+    }
+
+    // injects the gate sperator
+    // a little eval optimization for `y_running * gate_cuurent == 0` and `y_current * gate_running == 0`
+    pub(crate) fn cross_with_seperator(&self, gate_index: usize) -> Vec<Expression> {
+        let crossed_current = self.cross();
+        let crossed_running = crossed_current.clone();
+
+        let seperator_current: Expression = Variable::Seperator(gate_index).current().into();
+        let mut crossed_current = crossed_current
+            .iter()
+            .map(|expr| expr.clone() * seperator_current.clone())
+            .collect::<Vec<_>>();
+        crossed_current.push(0.into());
+
+        let seperator_running: Expression = Variable::Seperator(gate_index).running().into();
+        let mut crossed_running = crossed_running
+            .iter()
+            .map(|expr| expr.clone() * seperator_running.clone())
+            .collect::<Vec<_>>();
+        crossed_running.insert(0, 0.into());
+        assert!(crossed_current.len() == crossed_running.len());
+
+        crossed_current
+            .iter()
+            .zip(crossed_running.iter())
+            .map(|(a, b)| a.clone() + b.clone())
+            .collect()
     }
 }
 
@@ -629,9 +473,9 @@ impl Neg for Expression {
 impl Add for Expression {
     type Output = Expression;
     fn add(self, rhs: Expression) -> Expression {
-        if rhs == Self::scalar(0) {
+        if rhs == 0.into() {
             self
-        } else if self == Self::scalar(0) {
+        } else if self == 0.into() {
             rhs
         } else {
             Expression::Sum(Box::new(self), Box::new(rhs))
@@ -642,9 +486,9 @@ impl Add for Expression {
 impl Sub for Expression {
     type Output = Expression;
     fn sub(self, rhs: Expression) -> Expression {
-        if rhs == Self::scalar(0) {
+        if rhs == 0.into() {
             self
-        } else if self == Self::scalar(0) {
+        } else if self == 0.into() {
             -rhs
         } else {
             Expression::Sum(Box::new(self), Box::new(-rhs))
@@ -670,7 +514,7 @@ impl Mul<F> for Expression {
 
 impl From<Folding> for Expression {
     fn from(folding: Folding) -> Self {
-        Expression::Variable(folding.clone())
+        Expression::Variable(folding)
     }
 }
 
@@ -682,7 +526,7 @@ impl From<&Folding> for Expression {
 
 impl From<Constant> for Expression {
     fn from(constant: Constant) -> Self {
-        Expression::Constant(constant.clone())
+        Expression::Constant(constant)
     }
 }
 
@@ -692,77 +536,32 @@ impl From<&Constant> for Expression {
     }
 }
 
-impl From<&Expression> for Term {
-    fn from(expression: &Expression) -> Self {
-        Self {
-            variables: expression.variables(),
-            constants: expression.constants(),
-            negated: expression.is_negated(),
-        }
+impl From<usize> for Variable {
+    fn from(index: usize) -> Self {
+        Variable::Value(index)
     }
 }
 
-impl From<&Term> for Expression {
-    fn from(term: &Term) -> Self {
-        let constants: Vec<Expression> = term
-            .constants
-            .iter()
-            .map(|constant| constant.into())
-            .collect();
-        let variables: Vec<Expression> = term
-            .variables
-            .iter()
-            .map(|variables| variables.current().into())
-            .collect();
-
-        let expressions: Vec<Expression> =
-            variables.into_iter().chain(constants.into_iter()).collect();
-        let expression = Expression::product(&expressions);
-        if term.negated {
-            -expression
-        } else {
-            expression
-        }
+impl From<Variable> for Expression {
+    fn from(var: Variable) -> Self {
+        Expression::Variable(var.into())
     }
 }
 
-impl From<&CrossTerm> for Expression {
-    fn from(cross_term: &CrossTerm) -> Self {
-        let cross_terms: Vec<Expression> =
-            cross_term.0.iter().map(|folding| folding.into()).collect();
-        Expression::product(&cross_terms)
+impl From<F> for Expression {
+    fn from(c: F) -> Self {
+        Expression::Constant(Constant::Scalar(c))
     }
 }
 
-impl From<&Expression> for FlatExpression {
-    fn from(expression: &Expression) -> Self {
-        let terms = expression.flatten();
-        let terms = terms.iter().map(|term| term.into()).collect::<Vec<Term>>();
-        Self(terms)
+impl From<&F> for Expression {
+    fn from(c: &F) -> Self {
+        Expression::Constant(Constant::Scalar(*c))
     }
 }
 
-impl From<Expression> for FlatExpression {
-    fn from(expression: Expression) -> Self {
-        let terms = expression.flatten();
-        let terms = terms.iter().map(|term| term.into()).collect::<Vec<Term>>();
-        Self(terms)
-    }
-}
-
-impl From<FlatExpression> for Expression {
-    fn from(flat_expr: FlatExpression) -> Self {
-        (&flat_expr).into()
-    }
-}
-
-impl From<&FlatExpression> for Expression {
-    fn from(flat_expr: &FlatExpression) -> Self {
-        let terms = flat_expr
-            .0
-            .iter()
-            .map(|term| term.into())
-            .collect::<Vec<Expression>>();
-        Expression::sum(&terms)
+impl From<Variable> for Folding {
+    fn from(var: Variable) -> Self {
+        var.current()
     }
 }
