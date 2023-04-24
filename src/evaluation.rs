@@ -200,34 +200,36 @@ impl Evaluator {
         }
     }
 
-    fn raise_by_u(&mut self, targets: Vec<ValueSource>) -> Vec<ValueSource> {
-        // raise with `u`
-        let t0: Vec<_> = targets
-            .iter()
-            .map(|target| self.add_calculation(Calculation::Mul(target.clone(), ValueSource::U())))
-            .collect();
-
-        // raise with `u'`
-        let t_shift: Vec<_> = targets
-            .iter()
-            .map(|target| {
-                self.add_calculation(Calculation::Mul(target.clone(), ValueSource::RunningU()))
-            })
-            .collect();
-        // first term
-        let mut t = vec![t0[0].clone()];
-        // intermediate terms
-        for (t0, t_shift) in t0.iter().skip(1).zip(t_shift.iter()) {
-            t.push(self.add_calculation(Calculation::Add(t0.clone(), t_shift.clone())));
-        }
-        // final term
-        t.push(t_shift.last().unwrap().clone());
-
-        t
-    }
-
     pub fn add_cross(&mut self, expr: &Expression) {
         assert!(expr.folding_degree() > 0);
+
+        fn raise_by_u(ev: &mut Evaluator, targets: Vec<ValueSource>) -> Vec<ValueSource> {
+            // raise with `u`
+            let t0: Vec<_> = targets
+                .iter()
+                .map(|target| {
+                    ev.add_calculation(Calculation::Mul(target.clone(), ValueSource::U()))
+                })
+                .collect();
+
+            // raise with `u'`
+            let t_shift: Vec<_> = targets
+                .iter()
+                .map(|target| {
+                    ev.add_calculation(Calculation::Mul(target.clone(), ValueSource::RunningU()))
+                })
+                .collect();
+            // first term
+            let mut t = vec![t0[0].clone()];
+            // intermediate terms
+            for (t0, t_shift) in t0.iter().skip(1).zip(t_shift.iter()) {
+                t.push(ev.add_calculation(Calculation::Add(t0.clone(), t_shift.clone())));
+            }
+            // final term
+            t.push(t_shift.last().unwrap().clone());
+
+            t
+        }
 
         fn raise_and_combine(
             ev: &mut Evaluator,
@@ -239,9 +241,9 @@ impl Evaluator {
             let dif = degree_a.abs_diff(degree_b);
 
             if degree_a > degree_b {
-                (0..dif).for_each(|_| b = ev.raise_by_u(b.clone()));
+                (0..dif).for_each(|_| b = raise_by_u(ev, b.clone()));
             } else {
-                (0..dif).for_each(|_| a = ev.raise_by_u(a.clone()));
+                (0..dif).for_each(|_| a = raise_by_u(ev, a.clone()));
             };
             assert_eq!(a.len(), b.len());
             a.into_iter()
@@ -334,24 +336,6 @@ impl Evaluator {
             return;
         }
         self.targets = raise_and_combine(self, targets_new, self.targets.clone());
-
-        // let dif = targets_new.len().abs_diff(self.targets.len());
-        // let (t0, t1) = if targets_new.len() > self.targets.len() {
-        //     let targets_old = self.raise_by_u(self.targets.clone(), dif);
-        //     assert!(targets_new.len() == targets_old.len());
-        //     (targets_old, targets_new)
-        // } else {
-        //     let targets_new = self.raise_by_u(targets_new, dif);
-        //     let targets_old = self.targets.clone();
-        //     assert!(targets_new.len() == targets_old.len());
-        //     (targets_old, targets_new)
-        // };
-
-        // self.targets = t0
-        //     .iter()
-        //     .zip(t1.iter())
-        //     .map(|(t0, t1)| self.add_calculation(Calculation::Add(t0.clone(), t1.clone())))
-        //     .collect();
     }
 
     pub fn eval(
