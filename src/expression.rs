@@ -7,8 +7,6 @@ use std::ops::{Add, Mul, Neg, Sub};
 /// Sub-expression for values sources throughout folding
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum Variable {
-    /// Folding constant
-    U(),
     /// Witness value with index
     Value(usize),
     /// Gate seperator challenge
@@ -49,7 +47,6 @@ impl Expression {
                     &|index| fixed[index][row_index],
                     &|scalar| scalar,
                     &|index| current.values[index][row_index],
-                    &|| current.u,
                     &|index| current.seperators[index],
                 )
             })
@@ -69,13 +66,11 @@ impl Expression {
         scalar: &impl Fn(F) -> T,
         // valuess
         values: &impl Fn(usize) -> T,
-        u: &impl Fn() -> T,
         seperator: &impl Fn(usize) -> T,
     ) -> T {
         match self {
             Expression::Variable(var) => match var {
                 Variable::Value(index) => values(*index),
-                Variable::U() => u(),
                 Variable::Seperator(index) => seperator(*index),
             },
             Expression::Constant(constant) => match constant {
@@ -84,31 +79,31 @@ impl Expression {
             },
             Expression::Negated(a) => {
                 let a = a.eval(
-                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, seperator,
                 );
                 negated(a)
             }
             Expression::Sum(a, b) => {
                 let a = a.eval(
-                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, seperator,
                 );
                 let b = b.eval(
-                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, seperator,
                 );
                 sum(a, b)
             }
             Expression::Product(a, b) => {
                 let a = a.eval(
-                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, seperator,
                 );
                 let b = b.eval(
-                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, seperator,
                 );
                 product(a, b)
             }
             Expression::Scaled(a, f) => {
                 let a = a.eval(
-                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, seperator,
                 );
                 scaled(a, *f)
             }
@@ -125,18 +120,10 @@ impl Expression {
             .fold(expressions[0].clone(), |acc, expr| expr.clone() + acc)
     }
 
-    pub(crate) fn pow(&self, degree: usize) -> Self {
-        assert!(degree > 0);
-        (0..degree)
-            .skip(1)
-            .fold(self.clone(), |acc, _| acc * self.clone())
-    }
-
     pub(crate) fn folding_degree(&self) -> usize {
         match self {
             Expression::Variable(var) => match var {
                 Variable::Value(_) => 1,
-                Variable::U() => 1,
                 Variable::Seperator(_) => 1,
             },
             Expression::Constant(_) => 0,
@@ -157,7 +144,6 @@ impl Expression {
         match self {
             Expression::Variable(var) => match var {
                 Variable::Value(index) => write!(writer, "a{index}"),
-                Variable::U() => write!(writer, "u"),
                 Variable::Seperator(index) => write!(writer, "y{index}"),
             },
             Expression::Constant(constant) => match constant {

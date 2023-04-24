@@ -32,7 +32,6 @@ impl Expression {
         match self {
             Expression::Variable(var) => match var {
                 Variable::Value(index) => *index + 1,
-                Variable::U() => 0,
                 Variable::Seperator(_) => unreachable!(),
             },
             Expression::Constant(_) => 0,

@@ -97,11 +97,10 @@ impl Evaluator {
         }
     }
 
-    pub(crate) fn add_expression(&mut self, expr: &Expression) -> ValueSource {
+    pub fn add_expression(&mut self, expr: &Expression) -> ValueSource {
         match expr {
             // variables
             Expression::Variable(variable) => match variable {
-                Variable::U() => self.add_calculation(Calculation::Store(ValueSource::U())),
                 Variable::Seperator(index) => {
                     self.add_calculation(Calculation::Store(ValueSource::Seperator(*index)))
                 }
@@ -201,42 +200,59 @@ impl Evaluator {
         }
     }
 
-    fn raise_by_u(&mut self, targets: Vec<ValueSource>, degree: usize) -> Vec<ValueSource> {
-        let mut targets = targets;
-        for _ in 0..degree {
-            let t0: Vec<_> = targets
-                .iter()
-                .map(|target| {
-                    self.add_calculation(Calculation::Mul(target.clone(), ValueSource::U()))
-                })
-                .collect();
-            let t_shift: Vec<_> = targets
-                .iter()
-                .map(|target| {
-                    self.add_calculation(Calculation::Mul(target.clone(), ValueSource::RunningU()))
-                })
-                .collect();
-            let mut t = vec![t0[0].clone()];
-            for (t0, t_shift) in t0.iter().skip(1).zip(t_shift.iter()) {
-                t.push(self.add_calculation(Calculation::Add(t0.clone(), t_shift.clone())));
-            }
-            t.push(t_shift.last().unwrap().clone());
-            targets = t.clone();
+    fn raise_by_u(&mut self, targets: Vec<ValueSource>) -> Vec<ValueSource> {
+        // raise with `u`
+        let t0: Vec<_> = targets
+            .iter()
+            .map(|target| self.add_calculation(Calculation::Mul(target.clone(), ValueSource::U())))
+            .collect();
+
+        // raise with `u'`
+        let t_shift: Vec<_> = targets
+            .iter()
+            .map(|target| {
+                self.add_calculation(Calculation::Mul(target.clone(), ValueSource::RunningU()))
+            })
+            .collect();
+        // first term
+        let mut t = vec![t0[0].clone()];
+        // intermediate terms
+        for (t0, t_shift) in t0.iter().skip(1).zip(t_shift.iter()) {
+            t.push(self.add_calculation(Calculation::Add(t0.clone(), t_shift.clone())));
         }
-        targets
+        // final term
+        t.push(t_shift.last().unwrap().clone());
+
+        t
     }
 
-    pub(crate) fn add_cross(&mut self, expr: &Expression) {
+    pub fn add_cross(&mut self, expr: &Expression) {
         assert!(expr.folding_degree() > 0);
+
+        fn raise_and_combine(
+            ev: &mut Evaluator,
+            mut a: Vec<ValueSource>,
+            mut b: Vec<ValueSource>,
+        ) -> Vec<ValueSource> {
+            let degree_a = a.len();
+            let degree_b = b.len();
+            let dif = degree_a.abs_diff(degree_b);
+
+            if degree_a > degree_b {
+                (0..dif).for_each(|_| b = ev.raise_by_u(b.clone()));
+            } else {
+                (0..dif).for_each(|_| a = ev.raise_by_u(a.clone()));
+            };
+            assert_eq!(a.len(), b.len());
+            a.into_iter()
+                .zip(b.into_iter())
+                .map(|(a, b)| ev.add_calculation(Calculation::Add(a, b)))
+                .collect()
+        }
 
         pub(crate) fn add_cross(ev: &mut Evaluator, expr: &Expression) -> Vec<ValueSource> {
             match expr {
                 Expression::Variable(variable) => match variable {
-                    Variable::U() => {
-                        let cur = ev.add_calculation(Calculation::Store(ValueSource::U()));
-                        let run = ev.add_calculation(Calculation::Store(ValueSource::RunningU()));
-                        vec![cur, run]
-                    }
                     Variable::Seperator(index) => {
                         let cur =
                             ev.add_calculation(Calculation::Store(ValueSource::Seperator(*index)));
@@ -270,32 +286,10 @@ impl Evaluator {
                     let degree_a = a.folding_degree();
                     let degree_b = b.folding_degree();
                     let dif = degree_a.abs_diff(degree_b);
-
-                    let mut cross = |a, b| {
-                        let mut a = add_cross(ev, a);
-                        let mut b = add_cross(ev, b);
-                        if b.len() > a.len() {
-                            std::mem::swap(&mut a, &mut b);
-                        }
-                        for (a, b) in a.iter_mut().zip(b.into_iter()) {
-                            *a = ev.add_calculation(Calculation::Add(a.clone(), b))
-                        }
-                        a
-                    };
-
-                    if dif == 0 {
-                        cross(a, b)
-                    } else {
-                        let u: Expression = Variable::U().into();
-                        let u_power = Box::new(u.pow(dif));
-                        if degree_a > degree_b {
-                            let b = &Expression::Product(b.clone(), u_power);
-                            cross(a, b)
-                        } else {
-                            let a = &Expression::Product(a.clone(), u_power);
-                            cross(a, b)
-                        }
-                    }
+                    let a = add_cross(ev, a);
+                    let b = add_cross(ev, b);
+                    assert_eq!(a.len().abs_diff(b.len()), dif);
+                    raise_and_combine(ev, a, b)
                 }
                 Expression::Product(a, b) => {
                     let terms_a = add_cross(ev, a);
@@ -305,7 +299,6 @@ impl Evaluator {
                     for (i, a) in terms_a.iter().enumerate() {
                         for (j, b) in terms_b.iter().enumerate() {
                             let index = i + j;
-
                             let cal = ev.add_calculation(Calculation::Mul(a.clone(), b.clone()));
                             if index >= terms.len() {
                                 terms.push(cal);
@@ -340,24 +333,25 @@ impl Evaluator {
             self.targets = targets_new;
             return;
         }
+        self.targets = raise_and_combine(self, targets_new, self.targets.clone());
 
-        let dif = targets_new.len().abs_diff(self.targets.len());
-        let (t0, t1) = if targets_new.len() > self.targets.len() {
-            let targets_old = self.raise_by_u(self.targets.clone(), dif);
-            assert!(targets_new.len() == targets_old.len());
-            (targets_old, targets_new)
-        } else {
-            let targets_new = self.raise_by_u(targets_new, dif);
-            let targets_old = self.targets.clone();
-            assert!(targets_new.len() == targets_old.len());
-            (targets_old, targets_new)
-        };
+        // let dif = targets_new.len().abs_diff(self.targets.len());
+        // let (t0, t1) = if targets_new.len() > self.targets.len() {
+        //     let targets_old = self.raise_by_u(self.targets.clone(), dif);
+        //     assert!(targets_new.len() == targets_old.len());
+        //     (targets_old, targets_new)
+        // } else {
+        //     let targets_new = self.raise_by_u(targets_new, dif);
+        //     let targets_old = self.targets.clone();
+        //     assert!(targets_new.len() == targets_old.len());
+        //     (targets_old, targets_new)
+        // };
 
-        self.targets = t0
-            .iter()
-            .zip(t1.iter())
-            .map(|(t0, t1)| self.add_calculation(Calculation::Add(t0.clone(), t1.clone())))
-            .collect();
+        // self.targets = t0
+        //     .iter()
+        //     .zip(t1.iter())
+        //     .map(|(t0, t1)| self.add_calculation(Calculation::Add(t0.clone(), t1.clone())))
+        //     .collect();
     }
 
     pub fn eval(
