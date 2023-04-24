@@ -9,8 +9,6 @@ use std::ops::{Add, Mul, Neg, Sub};
 pub enum Variable {
     /// Witness value with index
     Value(usize),
-    /// Gate seperator challenge
-    Seperator(usize), // TODO: handle the case that first gate can be $y = 1$
 }
 
 /// Sub-expression for constant sources throughout folding
@@ -71,7 +69,6 @@ impl Expression {
         match self {
             Expression::Variable(var) => match var {
                 Variable::Value(index) => values(*index),
-                Variable::Seperator(index) => seperator(*index),
             },
             Expression::Constant(constant) => match constant {
                 Constant::Fixed(index) => fixed(*index),
@@ -110,21 +107,10 @@ impl Expression {
         }
     }
 
-    pub(crate) fn sum(expressions: &[Self]) -> Self {
-        let mut expressions = expressions.to_vec();
-        assert!(!expressions.is_empty());
-        expressions.sort();
-        expressions
-            .iter()
-            .skip(1)
-            .fold(expressions[0].clone(), |acc, expr| expr.clone() + acc)
-    }
-
     pub(crate) fn folding_degree(&self) -> usize {
         match self {
             Expression::Variable(var) => match var {
                 Variable::Value(_) => 1,
-                Variable::Seperator(_) => 1,
             },
             Expression::Constant(_) => 0,
             Expression::Negated(a) => a.folding_degree(),
@@ -144,7 +130,6 @@ impl Expression {
         match self {
             Expression::Variable(var) => match var {
                 Variable::Value(index) => write!(writer, "a{index}"),
-                Variable::Seperator(index) => write!(writer, "y{index}"),
             },
             Expression::Constant(constant) => match constant {
                 Constant::Fixed(index) => write!(writer, "q{index}"),

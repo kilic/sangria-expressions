@@ -29,15 +29,10 @@ impl Evaluator {
     }
 
     pub fn add_gates(&mut self, gates: Vec<Expression>) {
-        let mut gates = gates;
         assert!(!gates.is_empty());
-        gates.iter_mut().enumerate().for_each(|(index, gate)| {
-            let y: Expression = Variable::Seperator(index + self.number_of_gates).into();
-            *gate = gate.clone() * y;
+        gates.iter().for_each(|gate| {
+            self.add_cross(gate);
         });
-        let isolated = Expression::sum(&gates[..]);
-        self.number_of_gates += gates.len();
-        self.add_cross(&isolated);
     }
 
     pub(crate) fn new() -> Self {
@@ -101,10 +96,6 @@ impl Evaluator {
         match expr {
             // variables
             Expression::Variable(variable) => match variable {
-                Variable::Seperator(index) => {
-                    self.add_calculation(Calculation::Store(ValueSource::Seperator(*index)))
-                }
-
                 Variable::Value(index) => {
                     self.add_calculation(Calculation::Store(ValueSource::Value(*index)))
                 }
@@ -203,21 +194,21 @@ impl Evaluator {
     pub fn add_cross(&mut self, expr: &Expression) {
         assert!(expr.folding_degree() > 0);
 
-        fn raise_by_u(ev: &mut Evaluator, targets: Vec<ValueSource>) -> Vec<ValueSource> {
-            // raise with `u`
+        fn raise_by(
+            ev: &mut Evaluator,
+            targets: Vec<ValueSource>,
+            cur: ValueSource, // TODO: assert u or y
+            run: ValueSource, // TODO: assert u or y
+        ) -> Vec<ValueSource> {
+            // raise with `e`
             let t0: Vec<_> = targets
                 .iter()
-                .map(|target| {
-                    ev.add_calculation(Calculation::Mul(target.clone(), ValueSource::U()))
-                })
+                .map(|target| ev.add_calculation(Calculation::Mul(target.clone(), cur.clone())))
                 .collect();
-
-            // raise with `u'`
+            // raise with `e'`
             let t_shift: Vec<_> = targets
                 .iter()
-                .map(|target| {
-                    ev.add_calculation(Calculation::Mul(target.clone(), ValueSource::RunningU()))
-                })
+                .map(|target| ev.add_calculation(Calculation::Mul(target.clone(), run.clone())))
                 .collect();
             // first term
             let mut t = vec![t0[0].clone()];
@@ -241,9 +232,13 @@ impl Evaluator {
             let dif = degree_a.abs_diff(degree_b);
 
             if degree_a > degree_b {
-                (0..dif).for_each(|_| b = raise_by_u(ev, b.clone()));
+                (0..dif).for_each(|_| {
+                    b = raise_by(ev, b.clone(), ValueSource::U(), ValueSource::RunningU())
+                });
             } else {
-                (0..dif).for_each(|_| a = raise_by_u(ev, a.clone()));
+                (0..dif).for_each(|_| {
+                    a = raise_by(ev, a.clone(), ValueSource::U(), ValueSource::RunningU())
+                });
             };
             assert_eq!(a.len(), b.len());
             a.into_iter()
@@ -255,15 +250,6 @@ impl Evaluator {
         pub(crate) fn add_cross(ev: &mut Evaluator, expr: &Expression) -> Vec<ValueSource> {
             match expr {
                 Expression::Variable(variable) => match variable {
-                    Variable::Seperator(index) => {
-                        let cur =
-                            ev.add_calculation(Calculation::Store(ValueSource::Seperator(*index)));
-                        let run = ev.add_calculation(Calculation::Store(
-                            ValueSource::RunningSeperator(*index),
-                        ));
-                        vec![cur, run]
-                    }
-
                     Variable::Value(index) => {
                         let cur =
                             ev.add_calculation(Calculation::Store(ValueSource::Value(*index)));
@@ -331,11 +317,22 @@ impl Evaluator {
 
         let targets_new = add_cross(self, expr);
 
+        // raise by seperator
+        let y_index = self.number_of_gates;
+        let targets_new = raise_by(
+            self,
+            targets_new,
+            ValueSource::Seperator(y_index),
+            ValueSource::RunningSeperator(y_index),
+        );
+
+        self.number_of_gates += 1;
+
         if self.targets().is_empty() {
             self.targets = targets_new;
-            return;
+        } else {
+            self.targets = raise_and_combine(self, targets_new, self.targets.clone());
         }
-        self.targets = raise_and_combine(self, targets_new, self.targets.clone());
     }
 
     pub fn eval(
