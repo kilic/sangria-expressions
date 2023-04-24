@@ -1,85 +1,63 @@
 use crate::{
     calculation::{Calculation, CalculationInfo},
-    expression::{Constant, Expression, Folding, Variable},
+    expression::{Constant, Expression, Variable},
     poly::{Polynomial, F},
     Instance, ValueSource,
 };
-
-impl Evaluator {
-    // pub fn from(gates: &Vec<Expression>) -> Self {
-    pub fn from(gates: impl Iterator<Item = Expression>) -> Self {
-        let mut gates = gates.collect::<Vec<_>>();
-        assert!(!gates.is_empty());
-
-        gates.iter_mut().for_each(|gate| {
-            let degree = gate.folding_degree();
-            assert!(degree != 0);
-            *gate = gate.relax();
-            assert_eq!(gate.folding_degree(), degree);
-        });
-
-        let max_degree = gates
-            .iter()
-            .map(|gate| gate.folding_degree())
-            .max()
-            .unwrap();
-
-        gates.iter_mut().for_each(|gate| {
-            let degree = gate.folding_degree();
-            let dif = max_degree - degree;
-            if dif != 0 {
-                let u: Expression = Variable::U().into();
-                let u_power = u.pow(dif);
-                *gate = gate.clone() * u_power;
-                assert_eq!(gate.folding_degree(), max_degree);
-            }
-        });
-
-        let number_of_levels = max_degree + 2; //  one for multiplication and one for seperator
-        let crossed_gates: Vec<Vec<Expression>> = gates
-            .iter()
-            .enumerate()
-            .map(|(index, gate)| {
-                let crossed_gate = gate.cross_with_seperator(index);
-                assert_eq!(crossed_gate.len(), number_of_levels);
-                crossed_gate
-            })
-            .collect();
-
-        let mut evaluator = Evaluator::new(number_of_levels);
-        for level in 0..number_of_levels {
-            let gate_in_level = crossed_gates
-                .iter()
-                .map(|crossed_gate| crossed_gate[level].clone())
-                .collect::<Vec<_>>();
-            let level_sum = Expression::sum(&gate_in_level);
-            evaluator.add_expression(&level_sum, level);
-        }
-
-        evaluator
-    }
-}
 
 #[derive(Clone, Debug)]
 pub struct Evaluator {
     pub(crate) constants: Vec<F>,
     pub(crate) calculations: Vec<CalculationInfo>,
-    pub(crate) level_map: Vec<Vec<usize>>,
     pub(crate) num_intermediates: usize,
+    pub(crate) targets: Vec<ValueSource>,
+    pub(crate) number_of_gates: usize,
 }
 
 impl Evaluator {
-    fn new(number_of_levels: usize) -> Self {
+    pub fn from(gates: Vec<Expression>) -> Self {
+        let mut evaluator = Evaluator::new();
+
+        evaluator.add_gates(gates);
+
+        // also works like
+        // for gate in gates.into_iter() {
+        //     evaluator.add_gates(vec![gate]);
+        // }
+
+        evaluator
+    }
+
+    pub fn add_gates(&mut self, gates: Vec<Expression>) {
+        let mut gates = gates;
+        assert!(!gates.is_empty());
+        gates.iter_mut().enumerate().for_each(|(index, gate)| {
+            let y: Expression = Variable::Seperator(index + self.number_of_gates).into();
+            *gate = gate.clone() * y;
+        });
+        let isolated = Expression::sum(&gates[..]);
+        self.number_of_gates += gates.len();
+        self.add_cross(&isolated);
+    }
+
+    pub(crate) fn new() -> Self {
         Self {
             constants: vec![0, 1, 2],
             calculations: Vec::new(),
-            level_map: vec![vec![]; number_of_levels],
             num_intermediates: 0,
+            targets: Vec::new(),
+            number_of_gates: 0,
         }
     }
 
-    pub fn number_of_levels(&self) -> usize {
-        self.level_map.len()
+    pub(crate) fn targets(&self) -> Vec<usize> {
+        self.targets
+            .iter()
+            .map(|intermediate| match *intermediate {
+                ValueSource::Intermediate(target) => target,
+                _ => unreachable!(),
+            })
+            .collect::<Vec<_>>()
     }
 
     pub fn intermediates(&self) -> Vec<F> {
@@ -97,7 +75,7 @@ impl Evaluator {
         })
     }
 
-    fn add_calculation(&mut self, calculation: Calculation, level: usize) -> ValueSource {
+    fn add_calculation(&mut self, calculation: Calculation) -> ValueSource {
         let existing_calculation = self
             .calculations
             .iter()
@@ -109,8 +87,6 @@ impl Evaluator {
             }
             None => {
                 let target = self.num_intermediates;
-                let index = self.calculations.len();
-                self.level_map[level].push(index);
                 self.calculations.push(CalculationInfo {
                     calculation,
                     target,
@@ -121,41 +97,23 @@ impl Evaluator {
         }
     }
 
-    /// Generates an optimized evaluation for the expression
-    pub(crate) fn add_expression(&mut self, expr: &Expression, level: usize) -> ValueSource {
+    pub(crate) fn add_expression(&mut self, expr: &Expression) -> ValueSource {
         match expr {
             // variables
-            Expression::Variable(folding) => match folding {
-                Folding::Current(variable) => match variable {
-                    Variable::U() => {
-                        self.add_calculation(Calculation::Store(ValueSource::U()), level)
-                    }
-                    Variable::Seperator(index) => self
-                        .add_calculation(Calculation::Store(ValueSource::Seperator(*index)), level),
+            Expression::Variable(variable) => match variable {
+                Variable::U() => self.add_calculation(Calculation::Store(ValueSource::U())),
+                Variable::Seperator(index) => {
+                    self.add_calculation(Calculation::Store(ValueSource::Seperator(*index)))
+                }
 
-                    Variable::Value(index) => {
-                        self.add_calculation(Calculation::Store(ValueSource::Value(*index)), level)
-                    }
-                },
-                Folding::Running(variable) => match variable {
-                    Variable::U() => {
-                        self.add_calculation(Calculation::Store(ValueSource::RunningU()), level)
-                    }
-                    Variable::Seperator(index) => self.add_calculation(
-                        Calculation::Store(ValueSource::RunningSeperator(*index)),
-                        level,
-                    ),
-
-                    Variable::Value(index) => self.add_calculation(
-                        Calculation::Store(ValueSource::RunningValue(*index)),
-                        level,
-                    ),
-                },
+                Variable::Value(index) => {
+                    self.add_calculation(Calculation::Store(ValueSource::Value(*index)))
+                }
             },
             // constants
             Expression::Constant(constant) => match constant {
                 Constant::Fixed(index) => {
-                    self.add_calculation(Calculation::Store(ValueSource::Fixed(*index)), level)
+                    self.add_calculation(Calculation::Store(ValueSource::Fixed(*index)))
                 }
                 Constant::Scalar(e) => self.add_constant(e),
             },
@@ -164,18 +122,18 @@ impl Evaluator {
                 Expression::Constant(constant) => match constant {
                     Constant::Scalar(scalar) => self.add_constant(&-scalar),
                     _ => {
-                        let result_a = self.add_expression(a, level);
+                        let result_a = self.add_expression(a);
                         match result_a {
                             ValueSource::Scalar(0) => result_a,
-                            _ => self.add_calculation(Calculation::Negate(result_a), level),
+                            _ => self.add_calculation(Calculation::Negate(result_a)),
                         }
                     }
                 },
                 _ => {
-                    let result_a = self.add_expression(a, level);
+                    let result_a = self.add_expression(a);
                     match result_a {
                         ValueSource::Scalar(0) => result_a,
-                        _ => self.add_calculation(Calculation::Negate(result_a), level),
+                        _ => self.add_calculation(Calculation::Negate(result_a)),
                     }
                 }
             },
@@ -183,34 +141,34 @@ impl Evaluator {
                 // Undo subtraction stored as a + (-b) in expressions
                 match &**b {
                     Expression::Negated(b_int) => {
-                        let result_a = self.add_expression(a, level);
-                        let result_b = self.add_expression(b_int, level);
+                        let result_a = self.add_expression(a);
+                        let result_b = self.add_expression(b_int);
                         if result_a == ValueSource::Scalar(0) {
-                            self.add_calculation(Calculation::Negate(result_b), level)
+                            self.add_calculation(Calculation::Negate(result_b))
                         } else if result_b == ValueSource::Scalar(0) {
                             result_a
                         } else {
-                            self.add_calculation(Calculation::Sub(result_a, result_b), level)
+                            self.add_calculation(Calculation::Sub(result_a, result_b))
                         }
                     }
                     _ => {
-                        let result_a = self.add_expression(a, level);
-                        let result_b = self.add_expression(b, level);
+                        let result_a = self.add_expression(a);
+                        let result_b = self.add_expression(b);
                         if result_a == ValueSource::Scalar(0) {
                             result_b
                         } else if result_b == ValueSource::Scalar(0) {
                             result_a
                         } else if result_a <= result_b {
-                            self.add_calculation(Calculation::Add(result_a, result_b), level)
+                            self.add_calculation(Calculation::Add(result_a, result_b))
                         } else {
-                            self.add_calculation(Calculation::Add(result_b, result_a), level)
+                            self.add_calculation(Calculation::Add(result_b, result_a))
                         }
                     }
                 }
             }
             Expression::Product(a, b) => {
-                let result_a = self.add_expression(a, level);
-                let result_b = self.add_expression(b, level);
+                let result_a = self.add_expression(a);
+                let result_b = self.add_expression(b);
                 if result_a == ValueSource::Scalar(0) || result_b == ValueSource::Scalar(0) {
                     ValueSource::Scalar(0)
                 } else if result_a == ValueSource::Scalar(1) {
@@ -218,56 +176,200 @@ impl Evaluator {
                 } else if result_b == ValueSource::Scalar(1) {
                     result_a
                 } else if result_a == ValueSource::Scalar(2) {
-                    self.add_calculation(Calculation::Double(result_b), level)
+                    self.add_calculation(Calculation::Double(result_b))
                 } else if result_b == ValueSource::Scalar(2) {
-                    self.add_calculation(Calculation::Double(result_a), level)
+                    self.add_calculation(Calculation::Double(result_a))
                 } else if result_a == result_b {
-                    self.add_calculation(Calculation::Square(result_a), level)
+                    self.add_calculation(Calculation::Square(result_a))
                 } else if result_a <= result_b {
-                    self.add_calculation(Calculation::Mul(result_a, result_b), level)
+                    self.add_calculation(Calculation::Mul(result_a, result_b))
                 } else {
-                    self.add_calculation(Calculation::Mul(result_b, result_a), level)
+                    self.add_calculation(Calculation::Mul(result_b, result_a))
                 }
             }
             Expression::Scaled(a, f) => {
                 if *f == 0 {
                     ValueSource::Scalar(0)
                 } else if *f == 1 {
-                    self.add_expression(a, level)
+                    self.add_expression(a)
                 } else {
                     let cst = self.add_constant(f);
-                    let result_a = self.add_expression(a, level);
-                    self.add_calculation(Calculation::Mul(result_a, cst), level)
+                    let result_a = self.add_expression(a);
+                    self.add_calculation(Calculation::Mul(result_a, cst))
                 }
             }
         }
     }
 
+    fn raise_by_u(&mut self, targets: Vec<ValueSource>, degree: usize) -> Vec<ValueSource> {
+        let mut targets = targets;
+        for _ in 0..degree {
+            let t0: Vec<_> = targets
+                .iter()
+                .map(|target| {
+                    self.add_calculation(Calculation::Mul(target.clone(), ValueSource::U()))
+                })
+                .collect();
+            let t_shift: Vec<_> = targets
+                .iter()
+                .map(|target| {
+                    self.add_calculation(Calculation::Mul(target.clone(), ValueSource::RunningU()))
+                })
+                .collect();
+            let mut t = vec![t0[0].clone()];
+            for (t0, t_shift) in t0.iter().skip(1).zip(t_shift.iter()) {
+                t.push(self.add_calculation(Calculation::Add(t0.clone(), t_shift.clone())));
+            }
+            t.push(t_shift.last().unwrap().clone());
+            targets = t.clone();
+        }
+        targets
+    }
+
+    pub(crate) fn add_cross(&mut self, expr: &Expression) {
+        assert!(expr.folding_degree() > 0);
+
+        pub(crate) fn add_cross(ev: &mut Evaluator, expr: &Expression) -> Vec<ValueSource> {
+            match expr {
+                Expression::Variable(variable) => match variable {
+                    Variable::U() => {
+                        let cur = ev.add_calculation(Calculation::Store(ValueSource::U()));
+                        let run = ev.add_calculation(Calculation::Store(ValueSource::RunningU()));
+                        vec![cur, run]
+                    }
+                    Variable::Seperator(index) => {
+                        let cur =
+                            ev.add_calculation(Calculation::Store(ValueSource::Seperator(*index)));
+                        let run = ev.add_calculation(Calculation::Store(
+                            ValueSource::RunningSeperator(*index),
+                        ));
+                        vec![cur, run]
+                    }
+
+                    Variable::Value(index) => {
+                        let cur =
+                            ev.add_calculation(Calculation::Store(ValueSource::Value(*index)));
+                        let run = ev
+                            .add_calculation(Calculation::Store(ValueSource::RunningValue(*index)));
+                        vec![cur, run]
+                    }
+                },
+                Expression::Constant(constant) => match constant {
+                    Constant::Fixed(index) => {
+                        vec![ev.add_calculation(Calculation::Store(ValueSource::Fixed(*index)))]
+                    }
+                    Constant::Scalar(e) => vec![ev.add_constant(e)],
+                },
+                Expression::Negated(a) => {
+                    let t = add_cross(ev, a);
+                    t.iter()
+                        .map(|v| ev.add_calculation(Calculation::Negate(v.clone())))
+                        .collect()
+                }
+                Expression::Sum(a, b) => {
+                    let degree_a = a.folding_degree();
+                    let degree_b = b.folding_degree();
+                    let dif = degree_a.abs_diff(degree_b);
+
+                    let mut cross = |a, b| {
+                        let mut a = add_cross(ev, a);
+                        let mut b = add_cross(ev, b);
+                        if b.len() > a.len() {
+                            std::mem::swap(&mut a, &mut b);
+                        }
+                        for (a, b) in a.iter_mut().zip(b.into_iter()) {
+                            *a = ev.add_calculation(Calculation::Add(a.clone(), b))
+                        }
+                        a
+                    };
+
+                    if dif == 0 {
+                        cross(a, b)
+                    } else {
+                        let u: Expression = Variable::U().into();
+                        let u_power = Box::new(u.pow(dif));
+                        if degree_a > degree_b {
+                            let b = &Expression::Product(b.clone(), u_power);
+                            cross(a, b)
+                        } else {
+                            let a = &Expression::Product(a.clone(), u_power);
+                            cross(a, b)
+                        }
+                    }
+                }
+                Expression::Product(a, b) => {
+                    let terms_a = add_cross(ev, a);
+                    let terms_b = add_cross(ev, b);
+                    let degree = terms_a.len() + terms_b.len() - 1;
+                    let mut terms: Vec<ValueSource> = Vec::with_capacity(degree);
+                    for (i, a) in terms_a.iter().enumerate() {
+                        for (j, b) in terms_b.iter().enumerate() {
+                            let index = i + j;
+
+                            let cal = ev.add_calculation(Calculation::Mul(a.clone(), b.clone()));
+                            if index >= terms.len() {
+                                terms.push(cal);
+                            } else {
+                                terms[index] =
+                                    ev.add_calculation(Calculation::Add(terms[index].clone(), cal));
+                            }
+                        }
+                    }
+                    terms
+                }
+                Expression::Scaled(a, f) => {
+                    if *f == 0 {
+                        vec![ValueSource::Scalar(0)]
+                    } else if *f == 1 {
+                        add_cross(ev, a)
+                    } else {
+                        let cst = ev.add_constant(f);
+                        let result_a = add_cross(ev, a);
+                        result_a
+                            .iter()
+                            .map(|v| ev.add_calculation(Calculation::Mul(v.clone(), cst.clone())))
+                            .collect()
+                    }
+                }
+            }
+        }
+
+        let targets_new = add_cross(self, expr);
+
+        if self.targets().is_empty() {
+            self.targets = targets_new;
+            return;
+        }
+
+        let dif = targets_new.len().abs_diff(self.targets.len());
+        let (t0, t1) = if targets_new.len() > self.targets.len() {
+            let targets_old = self.raise_by_u(self.targets.clone(), dif);
+            assert!(targets_new.len() == targets_old.len());
+            (targets_old, targets_new)
+        } else {
+            let targets_new = self.raise_by_u(targets_new, dif);
+            let targets_old = self.targets.clone();
+            assert!(targets_new.len() == targets_old.len());
+            (targets_old, targets_new)
+        };
+
+        self.targets = t0
+            .iter()
+            .zip(t1.iter())
+            .map(|(t0, t1)| self.add_calculation(Calculation::Add(t0.clone(), t1.clone())))
+            .collect();
+    }
+
     pub fn eval(
         &self,
         intermediates: &mut [F],
-        level: usize,
         row_index: usize,
         fixed: &[Polynomial],
         //
         current_instance: &Instance,
         running_instance: &Instance,
-    ) -> F {
-        let calculation_indexes = &self.level_map[level];
-        let calculations = self
-            .calculations
-            .iter()
-            .enumerate()
-            .filter_map(|(i, e)| {
-                if calculation_indexes.contains(&i) {
-                    Some(e.clone())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>();
-
-        for info in calculations.iter() {
+    ) -> Vec<F> {
+        for info in self.calculations.iter() {
             intermediates[info.target] = info.calculation.eval(
                 row_index,
                 intermediates,
@@ -278,10 +380,11 @@ impl Evaluator {
             );
         }
 
-        if let Some(calc) = calculations.last() {
-            intermediates[calc.target]
-        } else {
-            0
-        }
+        let targets = self.targets();
+
+        targets
+            .into_iter()
+            .map(|target| intermediates[target])
+            .collect()
     }
 }

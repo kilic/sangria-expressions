@@ -34,13 +34,15 @@ impl Instance {
         assert!(current.error.is_zero());
         assert!(current.u == 1);
 
-        running.error = running.error.clone()
-            + inter_polys
-                .iter()
-                .skip(1)
-                .fold(inter_polys[0].clone() * r, |acc, t_i| {
-                    (acc + t_i.clone()) * r
-                });
+        if inter_polys.len() > 0 {
+            running.error = running.error.clone()
+                + inter_polys
+                    .iter()
+                    .skip(1)
+                    .fold(inter_polys[0].clone() * r, |acc, t_i| {
+                        (acc + t_i.clone()) * r
+                    });
+        }
 
         running.values = running
             .values
