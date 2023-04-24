@@ -160,19 +160,14 @@ impl Gate {
             u: 1,
             error: Polynomial::empty(size),
         };
-        values[self.result_index] =
-            self.expr
-                .eval_poly(fixed, &test_instance, &Instance::empty(size));
+        values[self.result_index] = self.expr.eval_poly(fixed, &test_instance);
         let test_instance = Instance {
             values: values.to_vec(),
             seperators: vec![],
             u: 1,
             error: Polynomial::empty(size),
         };
-        assert!(self
-            .satisfied()
-            .eval_poly(fixed, &test_instance, &Instance::empty(size))
-            .is_zero());
+        assert!(self.satisfied().eval_poly(fixed, &test_instance).is_zero());
     }
 }
 

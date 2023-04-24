@@ -37,12 +37,7 @@ pub enum Expression {
 }
 
 impl Expression {
-    pub fn eval_poly(
-        &self,
-        fixed: &[Polynomial],
-        current: &Instance,
-        running: &Instance,
-    ) -> Polynomial {
+    pub fn eval_poly(&self, fixed: &[Polynomial], current: &Instance) -> Polynomial {
         let size = current.error.len();
         (0..size)
             .map(|row_index| {
@@ -56,9 +51,6 @@ impl Expression {
                     &|index| current.values[index][row_index],
                     &|| current.u,
                     &|index| current.seperators[index],
-                    &|index| running.values[index][row_index],
-                    &|| running.u,
-                    &|index| running.seperators[index],
                 )
             })
             .collect::<Vec<_>>()
@@ -79,10 +71,6 @@ impl Expression {
         values: &impl Fn(usize) -> T,
         u: &impl Fn() -> T,
         seperator: &impl Fn(usize) -> T,
-
-        running_values: &impl Fn(usize) -> T,
-        running_u: &impl Fn() -> T,
-        running_seperator: &impl Fn(usize) -> T,
     ) -> T {
         match self {
             Expression::Variable(var) => match var {
@@ -96,97 +84,31 @@ impl Expression {
             },
             Expression::Negated(a) => {
                 let a = a.eval(
-                    negated,
-                    sum,
-                    product,
-                    scaled,
-                    fixed,
-                    scalar,
-                    values,
-                    u,
-                    seperator,
-                    running_values,
-                    running_u,
-                    running_seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
                 );
                 negated(a)
             }
             Expression::Sum(a, b) => {
                 let a = a.eval(
-                    negated,
-                    sum,
-                    product,
-                    scaled,
-                    fixed,
-                    scalar,
-                    values,
-                    u,
-                    seperator,
-                    running_values,
-                    running_u,
-                    running_seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
                 );
                 let b = b.eval(
-                    negated,
-                    sum,
-                    product,
-                    scaled,
-                    fixed,
-                    scalar,
-                    values,
-                    u,
-                    seperator,
-                    running_values,
-                    running_u,
-                    running_seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
                 );
                 sum(a, b)
             }
             Expression::Product(a, b) => {
                 let a = a.eval(
-                    negated,
-                    sum,
-                    product,
-                    scaled,
-                    fixed,
-                    scalar,
-                    values,
-                    u,
-                    seperator,
-                    running_values,
-                    running_u,
-                    running_seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
                 );
                 let b = b.eval(
-                    negated,
-                    sum,
-                    product,
-                    scaled,
-                    fixed,
-                    scalar,
-                    values,
-                    u,
-                    seperator,
-                    running_values,
-                    running_u,
-                    running_seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
                 );
                 product(a, b)
             }
             Expression::Scaled(a, f) => {
                 let a = a.eval(
-                    negated,
-                    sum,
-                    product,
-                    scaled,
-                    fixed,
-                    scalar,
-                    values,
-                    u,
-                    seperator,
-                    running_values,
-                    running_u,
-                    running_seperator,
+                    negated, sum, product, scaled, fixed, scalar, values, u, seperator,
                 );
                 scaled(a, *f)
             }
